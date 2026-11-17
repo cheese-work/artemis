@@ -154,6 +154,13 @@ def test_each_event_and_removal_label_binds_one_fail_closed_journey_assertion():
     assert [item["removed_names"] for item in removal_assertions] == EXPECTED_REMOVALS
     assert len({item["assertion_id"] for item in event_assertions}) == len(event_assertions)
     assert len({item["assertion_id"] for item in removal_assertions}) == len(removal_assertions)
+    assert event_assertions[27]["expected_trigger"] == "Weekly trial paywall actually visible"
+    assert event_assertions[27]["expected_params"]["paywall_id"] == "premium_weekly_trial"
+    assert (
+        event_assertions[28]["expected_trigger"]
+        == "Exit-discount sheet actually visible over weekly paywall"
+    )
+    assert event_assertions[28]["expected_params"]["paywall_id"] == "premium_yearly_exit"
 
     for index, item in enumerate(event_assertions, start=1):
         assert item["assertion_id"] == f"event_{index:02d}"

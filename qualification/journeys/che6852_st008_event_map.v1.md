@@ -139,10 +139,10 @@ Assert success occurs once on classification of the last real word in a nonempty
 Assert terminal load/generation failure uses only `load_failed`, `empty_deck`, `timeout` or `unknown`. **Fail closed:** empty deck reported as success or recoverable pronunciation failure as whole-deck failure fails.
 
 ### event_28: `paywall_scr_view`
-Assert the weekly paywall or exit-discount sheet emits its own visible-screen event with the original `source` and matching `paywall_id`. **Fail closed:** hidden route, wrong source/id or weekly re-emission after sheet dismissal fails.
+Assert the visible weekly trial paywall emits `paywall_scr_view` with the original `source` and `paywall_id=premium_weekly_trial`. **Fail closed:** the exit-discount sheet ID, a hidden route, a wrong source or weekly re-emission after sheet dismissal fails this row.
 
 ### event_29: `paywall_scr_view`
-Assert the other paywall surface emits once when it actually appears and retains the original `source`. **Fail closed:** route-only appearance or duplicate visibility event fails.
+Assert the visible exit-discount sheet over the weekly paywall emits `paywall_scr_view` with the original `source` and `paywall_id=premium_yearly_exit`. **Fail closed:** the weekly paywall ID, route-only appearance, missing sheet emission or duplicate visibility event fails this row.
 
 ### event_30: `paywall_btn_click`
 Assert accepted weekly purchase, restore, terms, privacy or close action records the allowed `button`, real store product ID or `none`, and original `source`. **Fail closed:** disabled/busy/duplicate action or a fabricated product ID fails.

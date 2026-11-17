@@ -36,7 +36,7 @@
     },
     "testcase_source": {
       "journey_path": "qualification/journeys/che6852_st008_event_map.v1.md",
-      "journey_digest_sha256": "b57a2c06931b0ae04e05a69fb93decf5743dc5069f6712cf33a25feae1b308ee",
+      "journey_digest_sha256": "f6783370899fd967e402d7a8b83afaab1f76ea438c7fefb8f37df753c6849a0d",
       "revision_policy": "A change to journey, receipt, runner, app source, effective lock, override, fixture contract or pinned goal requires a new candidate revision and fresh independent reviews."
     }
   },
@@ -185,8 +185,8 @@
       {"assertion_id":"event_25","event":"feature_flash_card_start","expected_trigger":"Accepted generation/load; explicit retry/restart is a new attempt","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
       {"assertion_id":"event_26","event":"feature_flash_card_success","expected_trigger":"Last real word classified; nonempty deck first completion transition","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
       {"assertion_id":"event_27","event":"feature_flash_card_fail","expected_trigger":"Terminal generation/load failure including empty deck","expected_params":{"error_code":["load_failed","empty_deck","timeout","unknown"]},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
-      {"assertion_id":"event_28","event":"paywall_scr_view","expected_trigger":"Weekly or exit-discount paywall surface actually visible","expected_params":{"source":["home","speaking","direct"],"paywall_id":["premium_weekly_trial","premium_yearly_exit"]},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
-      {"assertion_id":"event_29","event":"paywall_scr_view","expected_trigger":"Other paywall surface actually visible once, preserving original source","expected_params":{"source":["home","speaking","direct"],"paywall_id":["premium_weekly_trial","premium_yearly_exit"]},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_28","event":"paywall_scr_view","expected_trigger":"Weekly trial paywall actually visible","expected_params":{"source":["home","speaking","direct"],"paywall_id":"premium_weekly_trial"},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_29","event":"paywall_scr_view","expected_trigger":"Exit-discount sheet actually visible over weekly paywall","expected_params":{"source":["home","speaking","direct"],"paywall_id":"premium_yearly_exit"},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
       {"assertion_id":"event_30","event":"paywall_btn_click","expected_trigger":"Accepted weekly UI purchase/restore/terms/privacy/close action","expected_params":{"button":["purchase","restore","terms_of_use","privacy_policy","close"],"product_id":"real weekly store product ID or none","source":["home","speaking","direct"]},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
       {"assertion_id":"event_31","event":"paywall_btn_click","expected_trigger":"Yearly purchase or exit-sheet dismissal","expected_params":{"button":["purchase","close"],"product_id":"real yearly store product ID or none","source":["home","speaking","direct"]},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
       {"assertion_id":"event_32","event":"in_app_purchase","expected_trigger":"Firebase/Google Play automatic collection only in store sandbox","expected_params":{"schema":"automatic"},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null}
