@@ -80,9 +80,9 @@ class BrokerServer(socketserver.UnixStreamServer):
             super().__init__(str(self.socket_path), Handler, bind_and_activate=False)
             self.server_bind()
             self._owns_socket = True
-            self.server_activate()
             os.chmod(self.socket_path, 0o600)
             broker.restart()
+            self.server_activate()
         except BaseException:
             self.server_close()
             raise

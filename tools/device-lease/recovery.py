@@ -96,25 +96,26 @@ def recover_pending(broker):
         ]
     for group in pending:
         lease_id = group["lease_id"]
-        with sqlite3.connect(broker.db_path) as conn:
-            deadline = conn.execute(
-                "SELECT deadline_mono FROM broker_recovery_deadlines WHERE lease_id=?", (lease_id,)
-            ).fetchone()
-            changes = [
-                json.loads(r[0])
-                for r in conn.execute(
-                    "SELECT change FROM broker_changes WHERE lease_id=? ORDER BY seq DESC",
-                    (lease_id,),
-                )
-            ]
         state = group["state"]
         try:
+            with sqlite3.connect(broker.db_path) as conn:
+                deadline = conn.execute(
+                    "SELECT deadline_mono FROM broker_recovery_deadlines WHERE lease_id=?",
+                    (lease_id,),
+                ).fetchone()
 
             def remaining():
                 return deadline[0] - broker.monotonic() if deadline else 0
 
-            # Interrupted cleanup has uncertain external side effects. Recover manually.
-            if (
+            startup = group["startup"] is not None
+            if startup:
+                if (
+                    remaining() <= 0
+                    or broker.recovery_io.fence_startup(group, timeout=remaining()) is not True
+                    or remaining() <= 0
+                ):
+                    raise RuntimeError("AVD fence or cleanup unconfirmed")
+            elif (
                 broker.recovery_io.fence(group, timeout=max(0.001, remaining())) is not True
                 or remaining() <= 0
             ):
@@ -123,13 +124,22 @@ def recover_pending(broker):
                 raise RuntimeError("interrupted cleanup uncertain")
             broker.recovery(lease_id, state, "cleaning")
             state = "cleaning"
-            for change in changes:
-                validate_change(change)
-                if (
-                    remaining() <= 0
-                    or broker.recovery_io.undo(group, change, timeout=remaining()) is not True
-                ):
-                    raise RuntimeError("cleanup unconfirmed")
+            if not startup:
+                with sqlite3.connect(broker.db_path) as conn:
+                    changes = [
+                        json.loads(r[0])
+                        for r in conn.execute(
+                            "SELECT change FROM broker_changes WHERE lease_id=? ORDER BY seq DESC",
+                            (lease_id,),
+                        )
+                    ]
+                for change in changes:
+                    validate_change(change)
+                    if (
+                        remaining() <= 0
+                        or broker.recovery_io.undo(group, change, timeout=remaining()) is not True
+                    ):
+                        raise RuntimeError("cleanup unconfirmed")
             # R1's independent device-state comparison runs after all recorded undo.
             # Legacy local adapters have no raw-remote attestation contract.
             verify_state = getattr(broker.recovery_io, "verify_state", None)

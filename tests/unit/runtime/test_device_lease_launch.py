@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import copy
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import sqlite3
@@ -11,9 +12,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_device_lease_startup as fixtures
-from broker import Refused
+from broker import DeviceRegistry, Refused
 from daemon import BrokerServer, ControlServer
+from owned_recovery import OwnedRecovery
 import startup
+from authority import Authority
 
 
 class FakeLifecycle:
@@ -74,6 +77,10 @@ class FakeLifecycle:
         self.calls.append("observe")
         return copy.deepcopy(self.observation)
 
+    def check_binding(self, device, journal, identity, *, work):
+        if journal["worker"] != self.worker or journal["child"] != self.child:
+            raise startup.StartupMismatch("synthetic process replacement")
+
 
 class LaunchTests(unittest.TestCase):
     setUpFixtures = fixtures.StartupTests.setUpFixtures
@@ -104,6 +111,230 @@ class LaunchTests(unittest.TestCase):
         return self.broker.verify_startup(
             lease_id=self.group["lease_id"], principal="agent", run_id="run-1"
         )
+
+    def owner(self):
+        return dict(lease_id=self.group["lease_id"], principal="agent", run_id="run-1")
+
+    def recover_after_restart(self, live):
+        old = self.broker
+        recovery = OwnedRecovery(self.path, registry=self.registry, monotonic=lambda: self.now)
+        self.broker = self.new_broker(
+            managed_runs=old.managed_runs,
+            startup_snapshot=self.read_proof,
+            startup_io=self.io,
+            recovery_io=recovery,
+            recovery_owner="ops-fixture",
+            ops_issue="CHE-recovery",
+        )
+        stopped = []
+
+        def stop(identity, timeout):
+            stopped.append(live.pop(identity["pid"]))
+            return True
+
+        with (
+            patch.object(recovery, "_identity", side_effect=live.get),
+            patch.object(recovery, "_descendants", return_value=set()),
+            patch.object(recovery, "_daemon_pid", return_value=7000),
+            patch.object(recovery, "_stop", side_effect=stop),
+            patch.object(
+                recovery, "_adb", side_effect=AssertionError("AVD cleanup must not target ADB")
+            ),
+            patch.object(startup.LinuxStartupIO, "resource_users", return_value=set()),
+            patch.object(startup.LinuxStartupIO, "socket_owners", return_value={5037: {7000}}),
+            BrokerServer(Path(self.temp.name) / "socket", self.broker) as server,
+        ):
+            server.service_actions()
+            server.service_actions()
+        return stopped
+
+    def test_restart_after_execution_stops_only_journalled_processes_and_requires_verifier(self):
+        data = Path(self.temp.name) / "existing.avd"
+        data.mkdir()
+        userdata = data / "userdata-qemu.img"
+        userdata.write_bytes(b"pre-existing data")
+        self.device = replace(self.device, avd_data_path=str(data))
+        self.registry = self.broker.registry = DeviceRegistry([self.device])
+        self.proof["device"] = asdict(self.device)
+        self.publish()
+        self.group = self.start()
+        self.io.error = ConnectionError("crash after execution")
+        with self.assertRaises(ConnectionError):
+            self.launch()
+        unrelated = dict(self.io.child, pid=9000)
+        live = {row["pid"]: row for row in (self.io.worker, self.io.child, unrelated)}
+        stopped = self.recover_after_restart(live)
+        self.assertEqual(stopped, [self.io.child, self.io.worker])
+        self.assertEqual(live, {9000: unrelated})
+        self.assertEqual(userdata.read_bytes(), b"pre-existing data")
+        self.assertEqual(self.io.calls.count("execute"), 1)
+        status = self.broker.status(**self.owner())
+        self.assertEqual(status["state"], "verifying")
+        for field in ("expires_at", "hard_deadline"):
+            self.assertEqual(status[field], self.group[field])
+        self.refused("lease_not_active", self.launch)
+        self.refused("lease_not_active", self.start)
+        self.refused("run_already_holds", lambda: self.start(idempotency_key="new"))
+        self.refused(
+            "leader_required",
+            lambda: self.broker.verify_release(
+                self.group["lease_id"], verifier="agent", evidence="cleanup", passed=True
+            ),
+        )
+        result = self.broker.verify_release(
+            self.group["lease_id"],
+            verifier=self.broker.leader_id,
+            evidence="independent",
+            passed=True,
+        )
+        self.assertEqual(result["state"], "released")
+        self.assertEqual(self.start(idempotency_key="new")["state"], "active")
+
+    def test_restart_with_reused_pid_quarantines_without_signalling_either_process(self):
+        self.group = self.start()
+        self.launch()
+        replacement = dict(self.io.child, process_start="reused")
+        live = {row["pid"]: row for row in (self.io.worker, replacement)}
+        self.assertEqual(self.recover_after_restart(live), [])
+        self.assertEqual(live[replacement["pid"]], replacement)
+        result = self.broker.status(**self.owner())
+        self.assertEqual(result["state"], "quarantine")
+        self.assertEqual(result["recovery_owner"], "ops-fixture")
+        self.refused(
+            "state_conflict",
+            lambda: self.broker.verify_release(
+                self.group["lease_id"],
+                verifier=self.broker.leader_id,
+                evidence="absence",
+                passed=True,
+            ),
+        )
+
+    def test_scope_drift_and_worker_replacement_fence_before_work_mutations(self):
+        self.group = self.start()
+        self.launch()
+        self.verify()
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("UPDATE broker_access SET phase='work'")
+        self.io.worker = dict(self.io.worker, process_start="replacement")
+        self.refused(
+            "lease_not_active",
+            lambda: self.broker.record_change(
+                **self.owner(),
+                change=dict(kind="home", device_id=self.device.device_id, allowed=True),
+            ),
+        )
+        self.assertEqual(self.broker.status(**self.owner())["state"], "fencing")
+
+    def test_missing_startup_work_manifest_holds_capacity_without_signalling(self):
+        self.group = self.start()
+        self.launch()
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("DELETE FROM broker_changes")
+        live = {row["pid"]: row for row in (self.io.worker, self.io.child)}
+        self.assertEqual(self.recover_after_restart(live), [])
+        self.assertEqual(len(live), 2)
+        self.assertEqual(self.broker.status(**self.owner())["state"], "quarantine")
+        self.refused("run_already_holds", lambda: self.start(idempotency_key="new"))
+
+    def test_revoked_startup_snapshot_fences_and_does_not_replay_active_lease(self):
+        self.group = self.start()
+        self.proof["grant"]["reference"] = "replacement"
+        self.publish()
+        self.assertEqual(self.broker.status(**self.owner())["state"], "fencing")
+        self.refused("lease_not_active", self.start)
+
+    def test_expiry_after_permission_commit_keeps_execution_gate_closed(self):
+        self.group = self.start()
+
+        def boundary(name):
+            if name == "launch:executing":
+                self.now = self.group["expires_at"]
+
+        self.broker.boundary = boundary
+        self.refused("lease_not_active", self.launch)
+        self.assertNotIn("execute", self.io.calls)
+        self.assertIn("abort", self.io.calls)
+
+    def test_expiry_revoke_lost_holder_and_authority_change_fence_both_phases(self):
+        managed = self.broker.managed_runs
+        for phase in ("starting", "work"):
+            for fault in ("expiry", "revoke", "lost-holder", "authority-change"):
+                with self.subTest(phase=phase, fault=fault):
+                    self.now = self.proof["grant"]["observed_at"]
+                    directory = Path(self.temp.name) / f"{phase}-{fault}"
+                    directory.mkdir()
+                    self.path = directory / "leases.db"
+                    self.broker = self.new_broker(
+                        managed_runs=managed, startup_snapshot=self.read_proof, startup_io=self.io
+                    )
+                    self.write_record()
+                    self.group = self.start()
+                    self.launch()
+                    if phase == "work":
+                        self.verify()
+                        with sqlite3.connect(self.path) as conn:
+                            conn.execute("UPDATE broker_access SET phase='work'")
+                    if fault == "expiry":
+                        self.now = self.group["expires_at"]
+                    elif fault == "revoke":
+                        self.broker.revoke(self.group["lease_id"], actor="ops", role="ops")
+                    elif fault == "lost-holder":
+                        self.record_path.unlink()
+                    else:
+                        authority = Authority(
+                            self.broker, actor="ops", run_id="control", issue="CHE-control"
+                        )
+                        authority.drain("broker", 1)
+                        authority.fence("broker", 1, "next")
+                    status = self.broker.status(**self.owner())
+                    self.assertEqual(status["state"], "fencing")
+                    self.assertEqual(status["expires_at"], self.group["expires_at"])
+                    self.assertEqual(status["hard_deadline"], self.group["hard_deadline"])
+                    self.refused(
+                        "lease_not_active",
+                        lambda: self.broker.record_change(
+                            **self.owner(),
+                            change=dict(kind="home", device_id=self.device.device_id, allowed=True),
+                        ),
+                    )
+
+    def test_crash_boundaries_preserve_committed_occupancy_and_prevent_relaunch(self):
+        def interrupt(name):
+            if name == boundary:
+                raise KeyboardInterrupt()
+
+        managed = self.broker.managed_runs
+        for boundary, state in (
+            ("acquire:device", None),
+            ("startup:committed", "verifying"),
+            ("launch:planned", "quarantine"),
+            ("launch:prepared", "quarantine"),
+            ("launch:journalled", "verifying"),
+            ("launch:executing", "verifying"),
+        ):
+            with self.subTest(boundary=boundary):
+                directory = Path(self.temp.name) / boundary.replace(":", "-")
+                directory.mkdir()
+                self.path = directory / "leases.db"
+                self.broker = self.new_broker(
+                    managed_runs=managed, startup_snapshot=self.read_proof, startup_io=self.io
+                )
+                self.io.calls.clear()
+                self.broker.boundary = interrupt
+                with self.assertRaises(KeyboardInterrupt):
+                    self.group = self.start()
+                    self.launch()
+                with sqlite3.connect(self.path) as conn:
+                    row = conn.execute("SELECT lease_id FROM broker_groups").fetchone()
+                self.assertNotIn("execute", self.io.calls)
+                self.assertEqual(self.recover_after_restart({}), [])
+                if state is None:
+                    self.assertIsNone(row)
+                    continue
+                self.group = {"lease_id": row[0]}
+                self.assertEqual(self.broker.status(**self.owner())["state"], state)
+                self.refused("lease_not_active", self.launch)
 
     def test_journal_precedes_execution_and_retry_never_spawns_twice_or_renews(self):
         self.group = self.start()
@@ -182,7 +413,7 @@ class LaunchTests(unittest.TestCase):
         self.group = self.start()
         self.proof["run_id"] = "other"
         self.publish()
-        self.refused("startup_not_admitted", self.launch)
+        self.refused("lease_not_active", self.launch)
         self.assertEqual(self.io.calls, [])
         self.proof["run_id"] = "run-1"
         self.publish()
@@ -264,6 +495,11 @@ class LaunchTests(unittest.TestCase):
         }
         with (
             patch.object(adapter, "process_evidence", return_value=evidence),
+            patch.object(adapter, "_process_evidence", return_value=evidence),
+            patch(
+                "startup.process_identity",
+                side_effect={8001: self.io.worker, 8002: self.io.child}.get,
+            ),
             patch(
                 "startup.devices",
                 side_effect=[

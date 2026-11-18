@@ -85,6 +85,70 @@ def _journal(value):
     return json.loads(json.dumps(value))
 
 
+def pinned_device(registry, proof):
+    from dataclasses import asdict
+
+    device = registry.resolve(proof["device"]["device_id"])
+    if (
+        device is None
+        or device.kind != "avd"
+        or json.loads(json.dumps(asdict(device))) != proof["device"]
+    ):
+        raise StartupMismatch("pinned registry identity changed")
+    return device
+
+
+def active_faults(broker, conn, observations):
+    rows = conn.execute(
+        "SELECT g.lease_id,g.expires_at,a.startup,a.phase,b.binding,b.expiry_mono,"
+        "l.state,l.journal,l.identity FROM broker_groups g JOIN broker_access a USING (lease_id) "
+        "LEFT JOIN broker_bindings b USING (lease_id) LEFT JOIN broker_launches l USING (lease_id) "
+        "WHERE g.state='active' AND a.startup IS NOT NULL"
+    ).fetchall()
+    if not rows:
+        return {}
+    authority = broker._authority(conn)
+    now, mono = broker.clock(), broker.monotonic()
+    faults = {}
+    for row in rows:
+        lease_id = row["lease_id"]
+        if now >= row["expires_at"] or (
+            row["expiry_mono"] is not None and mono >= row["expiry_mono"]
+        ):
+            faults[lease_id] = "expired"
+            continue
+        if observations.get((lease_id, row["binding"])) is not True:
+            faults[lease_id] = "holder_unavailable"
+            continue
+        try:
+            proof = json.loads(row["startup"])
+            phase = row["phase"]
+            if (
+                (authority["name"], authority["generation"], authority["state"])
+                != (broker.authority_name, proof["generation"], "enabled")
+                or authority["generation"] != broker.authority_generation
+                or broker.draining
+                or (
+                    phase == "starting"
+                    and (proof != broker._admission.startup or now >= proof["grant"]["expires_at"])
+                )
+            ):
+                faults[lease_id] = "authority_changed"
+                continue
+            device = pinned_device(broker.registry, proof)
+            if phase not in {"starting", "work"} or (
+                phase == "work" and (row["state"] != "executing" or row["identity"] is None)
+            ):
+                faults[lease_id] = "work_binding_missing"
+            elif row["state"] == "executing":
+                journal = _journal(json.loads(row["journal"]))
+                identity = json.loads(row["identity"]) if row["identity"] is not None else None
+                broker.startup_io.check_binding(device, journal, identity, work=phase == "work")
+        except Exception:
+            faults[lease_id] = "launch_binding_unconfirmed"
+    return faults
+
+
 def launch(broker, *, lease_id, principal, run_id):
     if broker.startup_io is None:
         raise Refused("startup_launch_unavailable")
@@ -117,15 +181,16 @@ def launch(broker, *, lease_id, principal, run_id):
                 "INSERT INTO broker_launches VALUES (?,?,?,'planned',NULL,NULL)",
                 (lease_id, proof["generation"], proof["grant"]["reference"]),
             )
+            broker._event(conn, "launch_planned", now, group, generation=proof["generation"])
         broker.boundary("launch:planned")
         handle = broker.startup_io.prepare(device)
-        executing = False
+        resuming = False
         try:
             journal = _journal(handle)
             # Injection point models a journal write failure while the child is paused.
             broker.boundary("launch:prepared")
             with broker.transaction() as (conn, now):
-                _group(broker, conn, now, lease_id, principal, run_id)
+                group, _ = _group(broker, conn, now, lease_id, principal, run_id)
                 conn.execute(
                     "UPDATE broker_launches SET state='paused',journal=? WHERE lease_id=?",
                     (json.dumps(journal), lease_id),
@@ -145,19 +210,23 @@ def launch(broker, *, lease_id, principal, run_id):
                         ),
                     ),
                 )
+                broker._event(conn, "launch_journalled", now, group, processes=journal)
             broker.boundary("launch:journalled")
             # Recheck shared ADB/ports/data and current authority after journalling.
             broker.startup_io.preflight(device, journal)
             with broker.transaction() as (conn, now):
-                _group(broker, conn, now, lease_id, principal, run_id)
+                group, _ = _group(broker, conn, now, lease_id, principal, run_id)
                 conn.execute(
                     "UPDATE broker_launches SET state='executing' WHERE lease_id=?", (lease_id,)
                 )
-            executing = True  # Commit precedes gate release; a lost response cannot retry it.
+                broker._event(conn, "launch_permitted", now, group)
             broker.boundary("launch:executing")
+            with broker.transaction() as (conn, now):
+                _group(broker, conn, now, lease_id, principal, run_id)
+            resuming = True
             broker.startup_io.resume(handle)
         finally:
-            if not executing:
+            if not resuming:
                 broker.startup_io.abort(handle)
         return dict(lease_id=lease_id, state="executing", journal=journal)
 
@@ -454,6 +523,20 @@ class LinuxStartupIO:
     def process_evidence(self, device, journal):
         self.listener()
         self.pins(device)
+        return self._process_evidence(device, journal)
+
+    def check_binding(self, device, journal, identity, *, work):
+        if identity is None:
+            if any(process_identity(row["pid"]) != row for row in journal.values()):
+                raise StartupMismatch("owned process replaced")
+            return
+        if work:
+            self.listener()
+        evidence = self._process_evidence(device, journal)
+        if any(identity.get(key) != value for key, value in evidence.items()):
+            raise StartupMismatch("verified host binding changed")
+
+    def _process_evidence(self, device, journal):
         try:
             if any(process_identity(row["pid"]) != row for row in journal.values()):
                 raise StartupMismatch("owned process replaced")
