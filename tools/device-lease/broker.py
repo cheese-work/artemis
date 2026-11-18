@@ -192,7 +192,7 @@ class Broker:
             fingerprint = json.dumps(["renew", lease_id, ttl])
             self._expire(conn, now)
             group = self._owned(conn, lease_id, principal, run_id)
-            if group["access_phase"] != "work":
+            if group["access_phase"] != "work" or group["startup"] is not None:
                 raise Refused("access_phase_denied")
             replay = self._replay(conn, principal, run_id, idempotency_key, fingerprint)
             if replay is not None:
@@ -388,7 +388,14 @@ class Broker:
         with self.transaction(allow_audit_failure=True) as (conn, now):
             self._fence_all(conn)
             conn.execute(
-                "UPDATE broker_recovery_deadlines SET deadline_mono=?", (self._mono + 120,)
+                "UPDATE broker_recovery_deadlines SET deadline_mono=? WHERE lease_id NOT IN "
+                "(SELECT lease_id FROM broker_access WHERE startup IS NOT NULL)",
+                (self._mono + 120,),
+            )
+            conn.execute(
+                "DELETE FROM broker_reconcile WHERE lease_id IN (SELECT g.lease_id "
+                "FROM broker_groups g JOIN broker_access a USING (lease_id) "
+                "WHERE g.state='verifying' AND a.startup IS NOT NULL)"
             )
 
     def _fence_all(self, conn):
@@ -434,12 +441,18 @@ class Broker:
 
             recover_pending(self)
 
-    def _maintenance(self, conn, now, observations):
+    def _maintenance(self, conn, now, observations, startup_faults):
         self._mono = self.monotonic()
         if self._last_clock is not None:
             wall, mono = self._last_clock
             if self._mono < mono or abs((now - wall) - (self._mono - mono)) > 5:
                 self._fence_all(conn)
+        for lease_id, reason in startup_faults.items():
+            if conn.execute(
+                "UPDATE broker_groups SET state='fencing' WHERE lease_id=? AND state='active'",
+                (lease_id,),
+            ).rowcount:
+                self._event(conn, "startup_fence", now, self._view(conn, lease_id), reason=reason)
         # Legacy queued tickets receive an initial activity sample on first upgrade.
         conn.execute(
             "INSERT OR IGNORE INTO broker_ticket_wait SELECT ticket_id, issue_id, ?, NULL "
@@ -546,6 +559,9 @@ class Broker:
                 binding = json.loads(row["binding"])
                 if binding["mode"] in {"local", "managed"}:
                     observations[row["ticket_id"], row["binding"]] = self._run_alive(binding)
+            from startup import active_faults
+
+            startup_faults = active_faults(self, conn, observations)
             try:
                 with write_transaction(conn, self.clock, refusals=(Refused,)) as value:
                     conn.execute(
@@ -553,7 +569,7 @@ class Broker:
                     )
                     before = self._audit_snapshot(conn)
                     try:
-                        self._maintenance(conn, value[1], observations)
+                        self._maintenance(conn, value[1], observations, startup_faults)
                         yield value
                     finally:
                         self._audit_changes(conn, value[1], before)
@@ -685,6 +701,12 @@ class Broker:
             group = self._view(conn, lease_id)
             if group["state"] != "verifying":
                 raise Refused("state_conflict")
+            if group["startup"] is not None and verifier in {
+                group["holder"],
+                group["startup"]["agent_id"],
+                self.recovery_owner,
+            }:
+                raise Refused("independent_verifier_required")
             if not passed:
                 self._text(self.recovery_owner, self.ops_issue)
             conn.execute(
@@ -956,6 +978,8 @@ class Broker:
             self._expire(conn, now)
             replay = self._replay(conn, principal, run_id, idempotency_key, fingerprint)
             if replay is not None:
+                if starting:
+                    return self._startup_replay(conn, replay)
                 return replay
             ticket = self._ticket_owned(conn, ticket_id, principal, agent_id, issue_id)
             if starting != self._starting_ticket(conn, ticket):
@@ -1189,6 +1213,14 @@ class Broker:
             (principal, run_id, key, fingerprint, json.dumps(response)),
         )
 
+    def _startup_replay(self, conn, replay):
+        group = self._view(conn, replay["lease_id"])
+        if group["state"] != "active":
+            raise Refused("lease_not_active")
+        if self._admission.unavailable or not self._admission.audit_ok:
+            raise Refused("admission_unavailable")
+        return group
+
     def acquire(
         self,
         *,
@@ -1329,7 +1361,9 @@ class Broker:
             self._expire(conn, now)
             replay = self._replay(conn, principal, run_id, idempotency_key, fingerprint)
             if replay is not None:
-                return self._decide(entry, replay)
+                return self._decide(
+                    entry, self._startup_replay(conn, replay) if starting else replay
+                )
             if self.draining:
                 raise Refused("draining")
             if self._admission.unavailable or not self._admission.audit_ok:

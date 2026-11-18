@@ -238,20 +238,21 @@ outside SQLite writer transactions:
    Commit both PID/start-time/boot-ID records as `paused`, together with the
    existing `broker_changes` work manifest. A failed journal closes the pipe and
    the child exits without running the executable.
-3. Recheck admission and resource ownership. Commit `executing` before releasing
-   the pipe once. The child keeps its journalled PID across exec. The worker
-   remains its parent and reaps it.
+3. Recheck admission and resource ownership. Commit `executing`, then confirm the
+   lease and paused identities are still valid before releasing the pipe once.
+   The child keeps its journalled PID across exec. The worker remains its parent
+   and reaps it.
 4. Verify the actual child and parent, real AVD definition/data path, opened
    `userdata-qemu.img`, fixed socket owners and exact serial. Only after those
    checks and a real `device` row may four fixed serial-specific property probes
    read AVD name, API, ABI and boot completion. Recheck process ownership after
    probes. A mismatch fences the group and retains occupancy.
 
-Only positive identity disagreements fence the group. Missing sockets during
-boot, an absent/offline serial and incomplete boot return `startup_not_ready`.
+An unconfirmed boot is not itself an identity disagreement. Missing sockets
+during boot, an absent/offline serial and incomplete boot return `startup_not_ready`.
 Failed ADB probes, timeouts, unreadable process evidence and other uncertain
-observations return `startup_observation_unavailable`. Both refusals retain the
-active starting lease, its launch journal and its original deadlines. A retry
+observations return `startup_observation_unavailable`. These refusals do not
+themselves fence an otherwise live starting lease. A retry
 must perform the complete observation again; it never spawns another child.
 Wrong guest name/API/ABI, replaced process identity, changed pinned artifacts,
 wrong command-line paths/ports and positively attributed competing owners still
@@ -927,6 +928,31 @@ valid package syntax and exact package absence readback. Unsupported or ambiguou
 changes (including legacy HOME without comparable state) quarantine. Recovery
 never resets a device or restarts ADB. Raw local ADB remains cooperative.
 This adapter accepts local bindings only; remote bindings fail closed.
+
+### Startup-origin AVD recovery (CHE-6327, source only)
+
+The daemon commits its restart fence before listening. The broker fences a
+startup-origin lease on expiry, revoke, lost managed holder, authority change
+or lost/replaced launch binding. Work-phase checks also require a verified
+binding and the existing shared ADB listener. A retry cannot revive an active
+response for a fenced lease, release the gate twice or extend the original TTL
+or hard cap. This change does not promote a lease or authorize work access.
+
+Recovery uses the pinned AVD, launch journal and matching work manifest. It
+checks PID, start ticks, boot ID and descendants before signaling. It stops
+only exact journalled child and worker identities using pidfds, with no ADB
+commands, data reset or restoration of guest state. A complete host resource
+check and a clean startup fence can move the lease only to `verifying`. A
+planned-only or inconsistent journal, reused PID, unknown owner, timed-out
+fence, interrupted cleanup or work-phase guest state requiring restoration
+stays `quarantine`. Recovery does not extend the AVD cleanup window on restart.
+
+The configured `recovery_owner` owns quarantine and records cleanup evidence
+under the configured `ops_issue`. Quarantine recovery can only move to
+`verifying`. The configured Android authority (`leader_id`), independent of
+the holder, executor and recovery owner, must verify release through the
+private control socket. Process absence, readiness, restart reconciliation and
+elapsed TTL never release the canonical slot. Live activation remains separate.
 
 ### Owner producer operations and activation
 
