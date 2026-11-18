@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import socket
 import socketserver
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -264,6 +265,10 @@ def main(argv=None):
         owner.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
         if operation in {"write-readiness", "census-android-claims"}:
             owner.add_argument("--input", type=Path, required=True)
+        if operation == "census-android-claims":
+            owner.add_argument(
+                "--validate-reload", action="store_true", help="validate without publishing"
+            )
         if operation == "refresh":
             owner.add_argument("--host-config", type=Path, required=True)
         if operation in {"claim-android", "release-android"}:
@@ -341,6 +346,10 @@ def main(argv=None):
 
     try:
         if op == "serve":
+            if args["composition"] and args["registry"]:
+                from compose import _owner_file
+
+                _owner_file(args["registry"])
             registry = (
                 DeviceRegistry.load(args["registry"]) if args["registry"] else DeviceRegistry()
             )
@@ -398,14 +407,21 @@ def main(argv=None):
             _owner_file(args["registry"])
             registry = DeviceRegistry.load(args["registry"])
             state = args["state_dir"]
-            composed = compose(args["composition"], registry, db_path=state / "leases.sqlite3")
-            # Initialize broker tables. No maintenance worker or device I/O here.
-            Broker(state / "leases.sqlite3", registry, **composed["broker"]).inventory()
+            validate_reload = args.get("validate_reload", False)
+            composed = compose(
+                args["composition"],
+                registry,
+                db_path=state / "leases.sqlite3",
+                initialize=not validate_reload,
+            )
+            broker = Broker(state / "leases.sqlite3", registry, **composed["broker"])
+            if not validate_reload:
+                broker.ensure_schema()
             ledger = composed["ledger"]
             if op == "refresh":
                 from refresh import refresh
 
-                result = refresh(composed, args["host_config"], registry, state / "leases.sqlite3")
+                result = refresh(composed, args["host_config"], broker)
             elif op == "write-readiness":
                 result = write_readiness(composed, args["input"], registry)
             elif op == "census-android-claims":
@@ -419,7 +435,7 @@ def main(argv=None):
                     "claims",
                 }:
                     raise ValueError("invalid census")
-                result = ledger.census(**payload)
+                result = ledger.census(**payload, validate_reload=validate_reload)
             elif op == "claim-android":
                 result = {
                     "claim_id": ledger.claim(
@@ -485,6 +501,6 @@ def main(argv=None):
         # Field names only; never input paths, values or credentials.
         print(f"device-lease: {exc}", file=sys.stderr)
         return 2
-    except (OSError, ValueError, RuntimeError, Refused, subprocess.SubprocessError):
+    except (OSError, ValueError, RuntimeError, Refused, sqlite3.Error, subprocess.SubprocessError):
         print("device-lease: broker unavailable or invalid configuration", file=sys.stderr)
         return 2

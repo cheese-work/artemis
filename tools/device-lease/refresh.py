@@ -6,16 +6,18 @@ from an empty process list. A failed refresh invalidates the census immediately.
 """
 
 import hashlib
+from contextlib import closing
 import json
 import math
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import time
 
-from compose import _owner_file, write_readiness
+from compose import MAX_SKEW, _owner_file, write_readiness
 
 
 def _environment(unit):
@@ -104,9 +106,95 @@ def devices():
     return result
 
 
-def refresh(composed, host_config, registry, db_path):
+def avd_readiness(broker, observed, max_age, *, observed_at=None):
+    """Owner readback only, never an ordinary candidate or a work transition."""
+    from startup import _journal, phase_grant_matches, pinned_device, verified_identity
+
+    if broker.startup_io is None or broker.startup_snapshot is None or broker.draining:
+        return []
+    observed_at = broker.clock() if observed_at is None else observed_at
+    with broker.admission_guard():
+        try:
+            grants = broker.avd_grants()
+            if not {"qualification", "work"} & grants.keys():
+                return []
+            database = broker.db_path.resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(database, uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT g.lease_id,g.expires_at,a.phase,a.startup,b.binding,b.expiry_mono,"
+                    "l.generation,l.grant_ref,l.journal,l.identity "
+                    "FROM broker_groups g JOIN broker_access a USING (lease_id) "
+                    "JOIN broker_bindings b USING (lease_id) JOIN broker_launches l USING (lease_id) "
+                    "WHERE g.state='active' AND a.phase IN ('starting','work') "
+                    "AND l.state='executing' AND l.identity IS NOT NULL"
+                ).fetchall()
+                authority = broker._authority(conn)
+            if len(row) != 1 or (
+                authority["name"],
+                authority["generation"],
+                authority["state"],
+            ) != (
+                broker.authority_name,
+                broker.authority_generation,
+                "enabled",
+            ):
+                return []
+            row = row[0]
+            proof = json.loads(row["startup"])
+            now = broker.clock()
+            if (
+                proof != broker.startup_snapshot()
+                or row["generation"] != proof["generation"]
+                or row["generation"] != authority["generation"]
+                or row["grant_ref"] != proof["grant"]["reference"]
+                or now >= row["expires_at"]
+                or broker.monotonic() >= row["expiry_mono"]
+            ):
+                return []
+            device = pinned_device(broker.registry, proof)
+            endpoint = f"emulator-{device.console_port}"
+            if observed.get(endpoint) != "device":
+                return []
+            identity = json.loads(row["identity"])
+            measured = identity.pop("observed_at", None)
+            if type(measured) not in (int, float) or not -MAX_SKEW <= now - measured <= max_age:
+                return []
+            journal = _journal(json.loads(row["journal"]))
+            verified_identity(device, journal, identity)
+            if not broker._run_alive(json.loads(row["binding"])):
+                return []
+            for reader in broker.admission_sources.values():
+                aliases = reader()
+                if not isinstance(aliases, (list, tuple, set, frozenset)) or any(
+                    broker.registry.resolve(alias) in (None, device) for alias in aliases
+                ):
+                    return []
+            broker.startup_io.check_binding(device, journal, identity, work=True)
+            now = broker.clock()
+            if (
+                now >= min(row["expires_at"], proof["grant"]["expires_at"])
+                or not -MAX_SKEW <= now - measured <= max_age
+                or not -MAX_SKEW <= now - observed_at <= max_age
+                or broker.monotonic() >= row["expiry_mono"]
+                or grants != broker.avd_grants()
+            ):
+                return []
+            return [
+                dict(device_id=device.device_id, endpoint=endpoint, phase=phase)
+                for phase in ("qualification", "work")
+                if phase_grant_matches(
+                    grants.get(phase), phase, row["lease_id"], device, proof, now
+                )
+            ]
+        except (OSError, ValueError, RuntimeError, sqlite3.Error, TypeError, KeyError):
+            return []
+
+
+def refresh(composed, host_config, broker):
     """One guarded observation and refresh; never erase a known owned claim."""
     ledger = composed["ledger"]
+    registry, db_path = broker.registry, broker.db_path
     with composed["guard"]():
         snapshot = ledger.snapshot()
         try:
@@ -168,7 +256,13 @@ def refresh(composed, host_config, registry, db_path):
                 writers=["android", "artemis"],
                 claims=snapshot["claims"],
             )
-            return {**result, "ready_devices": len(payload["devices"])}
+            return {
+                **result,
+                "ready_devices": len(payload["devices"]),
+                "avd_readiness": avd_readiness(
+                    broker, observed, composed["admitted_age"], observed_at=now
+                ),
+            }
         except Exception as exc:
             try:
                 ledger.census(

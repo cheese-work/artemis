@@ -31,8 +31,9 @@ class FileGuard:
     Artemis lock writers take the same path through ARTEMIS_DEVICE_ADMISSION_GUARD.
     """
 
-    def __init__(self, path):
+    def __init__(self, path, *, create=True):
         self.path = Path(path)
+        self._flags = (os.O_CREAT | os.O_RDWR if create else os.O_RDONLY) | os.O_NOFOLLOW
         self._lock = threading.RLock()
         self._depth = 0
         self._fd = None
@@ -44,7 +45,7 @@ class FileGuard:
         self._lock.acquire()
         try:
             if self._depth == 0:
-                fd = os.open(self.path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+                fd = os.open(self.path, self._flags, 0o600)
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX)
                 except BaseException:
@@ -126,10 +127,15 @@ def admitted_reader(path, max_age, registry=None, clock=time.time):
                 number(grant["expires_at"]),
             )
             device = registry.resolve(row["device_id"])
+            endpoint_device = registry.resolve(row["endpoint"])
+            if row["endpoint"].startswith("emulator-") or any(
+                item is not None and item.kind == "avd" for item in (device, endpoint_device)
+            ):
+                raise ValueError("AVD readiness requires lifecycle evidence and a phase grant")
             if (
                 device is not None
                 and device.device_id == row["device_id"]
-                and registry.resolve(row["endpoint"]) == device
+                and endpoint_device == device
                 and device.pool != "spare"
                 and not device.restricted
                 and registry.eligible(row["endpoint"], row["state"])
@@ -275,6 +281,62 @@ def shared_adb_reader(path, max_age, clock=time.time):
     return read
 
 
+def avd_grant_reader(path, registry, max_age, clock=time.time):
+    """Owner grants for a specific committed lease, with no grant across phases."""
+
+    def read():
+        _owner_file(path)
+        rows = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(rows, list):
+            raise ValueError("invalid AVD grants source")
+        now, seen, result = clock(), set(), {}
+        for row in rows:
+            if (
+                not isinstance(row, dict)
+                or set(row)
+                != {
+                    "phase",
+                    "device_id",
+                    "endpoint",
+                    "lease_id",
+                    "generation",
+                    "reference",
+                    "observed_at",
+                    "expires_at",
+                }
+                or any(
+                    not isinstance(row[key], str) or not row[key].strip()
+                    for key in ("phase", "device_id", "endpoint", "lease_id", "reference")
+                )
+            ):
+                raise ValueError("invalid AVD phase grant")
+            device = registry.resolve(row["device_id"])
+            phase = row["phase"]
+            if (
+                phase not in {"identity", "qualification", "work"}
+                or phase in seen
+                or device is None
+                or device.kind != "avd"
+                or device.restricted
+                or device.device_id != row["device_id"]
+                or row["endpoint"] != f"emulator-{device.console_port}"
+                or type(row["generation"]) is not int
+                or row["generation"] < 1
+                or any(
+                    type(row[key]) not in (int, float) or not math.isfinite(row[key])
+                    for key in ("observed_at", "expires_at")
+                )
+                or row["observed_at"] >= row["expires_at"]
+            ):
+                raise ValueError("invalid AVD grant scope")
+            seen.add(phase)
+            if -MAX_SKEW <= now - row["observed_at"] <= max_age and now < row["expires_at"]:
+                result[phase] = row
+        return result
+
+    return read
+
+
 def write_claims_snapshot(path, guard, claims, clock=time.time):
     """Removed unsafe snapshot replacement. Use ClaimLedger's owned claim/release."""
     raise ValueError("unverified claims snapshots are disabled; use the claim ledger")
@@ -322,7 +384,7 @@ def _recovery(config, db_path, registry):
     return OwnedRecovery(db_path, registry=registry), owner, ops_issue
 
 
-def compose(config_path, registry, *, db_path=None):
+def compose(config_path, registry, *, db_path=None, initialize=True):
     """One store for the daemon, claims source and concrete recovery adapter.
 
     Validation precedes state creation. Legacy caller-written claims and imported
@@ -351,13 +413,14 @@ def compose(config_path, registry, *, db_path=None):
         or not 1 <= claims["max_age_seconds"] <= 3600
     ):
         raise CompositionError("composition incomplete: android_claims")
-    guard = FileGuard(_field(config, "guard_path", str))
+    guard = FileGuard(_field(config, "guard_path", str), create=initialize)
     # Validate recovery even when db_path is absent; no dynamic import fallback.
     recovery_io, owner, ops_issue = _recovery(config, db_path or ".", registry)
     control = Path(_field(config, "leader_control_socket", str))
     leader_id = _field(config, "leader_id", str)
     startup_snapshot = None
     startup_io = None
+    avd_grants = dict
     if "startup" in config:
         startup_path, startup_age = _snapshot(config, "startup")
         if managed_runs is None:
@@ -373,21 +436,42 @@ def compose(config_path, registry, *, db_path=None):
             from startup import LinuxStartupIO
 
             startup_io = LinuxStartupIO(shared_adb_reader(host_path, host_age))
+    if "avd_grants" in config:
+        if startup_snapshot is None or not any(
+            device.kind == "avd" for device in registry.devices()
+        ):
+            raise CompositionError("avd_grants requires startup and a registered AVD")
+        grants_path, grants_age = _snapshot(config, "avd_grants")
+        avd_grants = avd_grant_reader(grants_path, registry, grants_age)
     if db_path is None:
         raise CompositionError("composition requires the broker database")
     db_path = Path(db_path)
-    db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if initialize:
+        db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = db_path.parent.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise CompositionError("broker state directory must be private and owner-only")
     from device_lease.claims import ClaimLedger
 
-    ledger = ClaimLedger(db_path, guard, registry, locks, max_age=claims["max_age_seconds"])
+    lifecycle = {key: config[key] for key in ("startup", "avd_grants") if key in config}
+    if lifecycle:
+        lifecycle["managed_bindings_dir"] = config["managed_bindings_dir"]
+        lifecycle["leader_id"] = leader_id
+    ledger = ClaimLedger(
+        db_path,
+        guard,
+        registry,
+        locks,
+        max_age=claims["max_age_seconds"],
+        lifecycle_config=lifecycle,
+        initialize=initialize,
+    )
     return {
         "broker": {
             "managed_runs": managed_runs,
             "startup_snapshot": startup_snapshot,
             "startup_io": startup_io,
+            "avd_grants": avd_grants,
             "admitted": {},
             "admission_snapshot": admitted_reader(admitted_path, admitted_age, registry),
             "admission_sources": {"artemis": artemis_locks_reader(locks), "android": ledger.read},
