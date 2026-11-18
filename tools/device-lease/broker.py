@@ -70,6 +70,9 @@ _DDL = (
     "CREATE TABLE IF NOT EXISTS broker_ticket_origins (ticket_id TEXT PRIMARY KEY, run_id TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS broker_access (lease_id TEXT PRIMARY KEY, phase TEXT NOT NULL, startup TEXT)",
     "CREATE TABLE IF NOT EXISTS broker_startup_tickets (ticket_id TEXT PRIMARY KEY)",
+    "CREATE TABLE IF NOT EXISTS broker_launches (lease_id TEXT PRIMARY KEY, "
+    "generation INTEGER NOT NULL, grant_ref TEXT NOT NULL, state TEXT NOT NULL, "
+    "journal TEXT, identity TEXT, UNIQUE(generation,grant_ref))",
 )
 
 
@@ -120,6 +123,7 @@ class Broker:
         admission_guard=nullcontext,
         admission_snapshot=None,
         startup_snapshot=None,
+        startup_io=None,
         authority_name="broker",
         authority_generation=1,
         leader_id="5cd75ce5-d323-4004-9779-7e2ccf16bde4",
@@ -150,6 +154,7 @@ class Broker:
         # Optional trusted reader of fresh readiness/grants, re-read on every decision.
         self.admission_snapshot = admission_snapshot
         self.startup_snapshot = startup_snapshot
+        self.startup_io = startup_io
         if recovery_io is not None:
             self._text(recovery_owner, ops_issue)
 
@@ -895,7 +900,33 @@ class Broker:
             is not None
         )
 
-    def _ticket_candidates(self, conn, ticket):
+    def _ticket_candidates(self, conn, ticket, startup_claim=None):
+        if self._starting_ticket(conn, ticket):
+            proof = self._admission.startup
+            binding = self._ticket_view(conn, ticket["ticket_id"])["binding"]
+            run_id = (
+                binding["run_id"]
+                if binding
+                else (
+                    startup_claim[1]
+                    if startup_claim and startup_claim[0] == ticket["ticket_id"]
+                    else None
+                )
+            )
+            if (
+                not run_id
+                or not proof
+                or any(
+                    proof.get(k) != value
+                    for k, value in (
+                        ("principal", ticket["principal"]),
+                        ("agent_id", ticket["agent_id"]),
+                        ("issue_id", ticket["issue_id"]),
+                        ("run_id", run_id),
+                    )
+                )
+            ):
+                return []
         return self._candidates(
             ticket["pool"], ticket["device_id"], starting=self._starting_ticket(conn, ticket)
         )
@@ -938,6 +969,11 @@ class Broker:
                 (ticket_id, run_id),
             ).fetchone():
                 raise Refused("run_parked")
+            if starting and ticket["binding"] is None:
+                # A new managed run has now passed the trusted proof check. Offer
+                # and claim atomically; an unrelated proof cannot reserve FIFO space.
+                self._schedule(conn, now, startup_claim=(ticket_id, run_id))
+                ticket = self._ticket_view(conn, ticket_id)
             if self.draining:
                 raise Refused("draining")
             if conn.execute("SELECT 1 FROM broker_reconcile LIMIT 1").fetchone():
@@ -1034,7 +1070,7 @@ class Broker:
             )
             return self._ticket_view(conn, ticket_id)
 
-    def _schedule(self, conn, now):
+    def _schedule(self, conn, now, startup_claim=None):
         conn.execute(
             "UPDATE broker_tickets SET state='cancelled', reserved='[]', offer_expires_at=NULL "
             "WHERE state IN ('queued','offered') AND ticket_id IN "
@@ -1075,7 +1111,7 @@ class Broker:
         blocked = set()
         # ponytail: linear queue scan; index conflict sets if measured queue size requires it.
         for ticket in self._tickets(conn):
-            candidates = self._ticket_candidates(conn, ticket)
+            candidates = self._ticket_candidates(conn, ticket, startup_claim)
             conflict = bool(blocked.intersection(candidates))
             blocked.update(candidates)
             free = (
@@ -1214,8 +1250,16 @@ class Broker:
             )
 
     def launch_startup(self, *, lease_id, principal, run_id):
-        """Denied seam. Journalled worker and identity checks belong to the next stage."""
-        raise Refused("startup_launch_unavailable")
+        """Owner control only; a visible grant reference is never launch authority."""
+        from startup import launch
+
+        return launch(self, lease_id=lease_id, principal=principal, run_id=run_id)
+
+    def verify_startup(self, *, lease_id, principal, run_id):
+        """Recheck actual process/guest binding. This never grants work access."""
+        from startup import verify
+
+        return verify(self, lease_id=lease_id, principal=principal, run_id=run_id)
 
     def _startup_proof(self, conn, now, principal, agent_id, issue_id, run_id, binding, target):
         proof = self._admission.startup

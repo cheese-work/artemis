@@ -218,9 +218,101 @@ After parking, a new managed run needs a fresh scoped owner grant to use
 `claim-startup`; ordinary `claim` refuses startup tickets. Idempotent retries
 return the same lease and deadlines and do not repeat the `startup:committed`
 boundary. This boundary is a test hook after commit, not a launch implementation.
-`launch_startup` always refuses `startup_launch_unavailable`. The next stage must
-provide a journalled worker and identity checks before any emulator can execute.
-No promotion to work, launch, live configuration change or activation is included.
+Without an explicitly configured worker, `launch_startup` still refuses
+`startup_launch_unavailable`. No promotion to work or live activation is included.
+
+### Journalled startup and identity (CHE-6326, source only)
+
+The owner control socket additionally accepts `launch-startup` and
+`verify-startup`, each with `lease_id`, `principal` and `run_id`. Neither exists on
+the holder socket. A grant reference in status is visible audit data, not a
+credential: launch revalidates the current owner proof, live managed run, lease,
+authority, writer census and guard. Verification never changes the access phase.
+
+The shared claims guard covers this sequence; process/file/socket I/O stays
+outside SQLite writer transactions:
+
+1. Check the scoped host preflight, pinned artifacts, free fixed ports and no open
+   AVD. Commit a `planned` row to `broker_launches` before spawning anything.
+2. Start one trusted worker with a child blocked on a private pipe before exec.
+   Commit both PID/start-time/boot-ID records as `paused`, together with the
+   existing `broker_changes` work manifest. A failed journal closes the pipe and
+   the child exits without running the executable.
+3. Recheck admission and resource ownership. Commit `executing` before releasing
+   the pipe once. The child keeps its journalled PID across exec. The worker
+   remains its parent and reaps it.
+4. Verify the actual child and parent, real AVD definition/data path, opened
+   `userdata-qemu.img`, fixed socket owners and exact serial. Only after those
+   checks and a real `device` row may four fixed serial-specific property probes
+   read AVD name, API, ABI and boot completion. Recheck process ownership after
+   probes. A mismatch fences the group and retains occupancy.
+
+Only positive identity disagreements fence the group. Missing sockets during
+boot, an absent/offline serial and incomplete boot return `startup_not_ready`.
+Failed ADB probes, timeouts, unreadable process evidence and other uncertain
+observations return `startup_observation_unavailable`. Both refusals retain the
+active starting lease, its launch journal and its original deadlines. A retry
+must perform the complete observation again; it never spawns another child.
+Wrong guest name/API/ABI, replaced process identity, changed pinned artifacts,
+wrong command-line paths/ports and positively attributed competing owners still
+return `startup_identity_mismatch` and fence occupancy.
+
+`(generation, grant_ref)` is consumed once when the planned attempt commits.
+Duplicate calls after `executing` return the journal without another gate release.
+A crash, journal failure or uncertain attempt before execution returns
+`startup_launch_uncertain`; recovery must reconcile it before a new grant/attempt.
+Neither retries nor verification alter the original TTL or hard deadline. A stored
+identity is historical evidence: later promotion must call `verify_startup` again
+and separately validate its qualification/work authority and execution lock.
+
+The Linux adapter adapts the existing Popen launch primitive, with fixed `-avd`,
+`-datadir`, `-data` and `-ports`, plus `-no-snapshot` and `-no-snapshot-load`.
+It preserves existing userdata, requires the configured emulator/config digests
+and the `system.img` digest from `image.sysdir.1`, and refuses uncertain `/proc`
+visibility. It never adopts an old process or changes ports. Its raw loopback
+smart sockets cannot start ADB and expose no server-control or global-disconnect
+operation. Kernel TIME_WAIT rows (inode 0) have no live socket and are excluded
+from ownership. Live bound/listening sockets with an unseen owner still block.
+The worker and child both allow 120 seconds for journalling and artifact rechecks
+before the gate expires. EOF aborts immediately. Child stdin/stdout use read/write
+`/dev/null` without an extra descriptor.
+Full artifact hashing and bounded handshakes can refuse a slow host;
+this adapter still needs separate live qualification before activation.
+
+Opt-in owner composition extends the existing `startup` section:
+
+`linux-paused` requires effective UID 0 with full host PID and `/proc` visibility.
+Composition rejects this worker for a non-root process before serving requests.
+Even root must be able to inspect every relevant process descriptor; unreadable
+entries refuse observation rather than being skipped. The existing user-service
+deployment cannot enable this adapter as configured. A separately admitted
+privileged deployment is required before activation; this source change grants
+no privilege, changes no unit and enables no live worker. Without the worker
+setting, user-service composition continues to expose no launch capability.
+
+```json
+{
+  "path": "/owner/startup.json",
+  "max_age_seconds": 60,
+  "worker": {
+    "adapter": "linux-paused",
+    "host_preflight": {"path": "/owner/shared-adb.json", "max_age_seconds": 60}
+  }
+}
+```
+
+The private `shared-adb.json` has exactly `observed_at` (epoch seconds), `host`
+(`127.0.0.1`), `port` (`5037`), a nonempty ops `evidence` reference, and `listener`
+(`mode: local`, integer `pid`, string `process_start` and `boot_id`). The adapter
+rechecks that this exact process owns the shared socket. Missing, stale or
+uncertain evidence blocks before spawn. No running service/configuration is
+changed by this source implementation; expiry/restart reconciliation and later
+phase/claim/SDK handoffs remain the following stages.
+
+Startup offers now require the proof to match the ticket's bound run as well as
+its principal/agent/issue/device. A parked ticket has no live bound run. A new
+managed run validates its fresh proof through `claim-startup`, then offers and
+claims atomically; an unrelated run's proof cannot reserve the slot.
 
 Release or observed expiry changes `active` to `fencing`; it never deletes
 ownership. The trusted recovery worker can compare-and-set `fencing` -> `cleaning`

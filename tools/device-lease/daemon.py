@@ -183,6 +183,8 @@ class ControlServer(socketserver.UnixStreamServer):
             "record-change": self.broker.record_change,
             "start": self.broker.start,
             "claim-startup": self.broker.claim_startup,
+            "launch-startup": self.broker.launch_startup,
+            "verify-startup": self.broker.verify_startup,
         }
         if not isinstance(request["op"], str) or request["op"] not in methods:
             raise Refused("invalid_request")
