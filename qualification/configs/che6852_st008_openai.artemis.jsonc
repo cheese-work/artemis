@@ -1,0 +1,22 @@
+{
+  "planner": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "summarizer": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "operator": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "operator_summarizer": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "log_reader_sub_agent": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "log_analyzer": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "diagnoser": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "checker": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "planner_avatar": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "history_analyzer_expert": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "diagnoser_expert": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "explorer": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "validator_pixel_safety_net": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "planner_validation": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "utils": {
+    "outputter": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+    "hopper": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+    "video_analyzer": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+    "object_detector": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}}
+  }
+}

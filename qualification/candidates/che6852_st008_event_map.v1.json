@@ -36,7 +36,7 @@
     },
     "testcase_source": {
       "journey_path": "qualification/journeys/che6852_st008_event_map.v1.md",
-      "journey_digest_sha256": "f6783370899fd967e402d7a8b83afaab1f76ea438c7fefb8f37df753c6849a0d",
+      "journey_digest_sha256": "7607fccc00856174918f819acb8bf9c3116e812dfa784e4e212d3375e67d7b43",
       "revision_policy": "A change to journey, receipt, runner, app source, effective lock, override, fixture contract or pinned goal requires a new candidate revision and fresh independent reviews."
     }
   },
@@ -74,7 +74,23 @@
       "metered_spend_possible": true,
       "provider_call_made": false,
       "spend_decision_owner": "Android device squad leader",
-      "open_point": "CHE-6839 permits no spend. A provider call can incur metered spend; the Android device squad leader must resolve this before any provider call."
+      "spend_authorization": {
+        "status": "AUTHORIZED_WITH_CAP",
+        "provider": "openai",
+        "model": "gpt-6-sol",
+        "max_usd_per_run": 5,
+        "max_usd_total": 15
+      },
+      "open_point": "No provider call until both independent reviews approve this exact candidate and the Android device squad records AVD admission."
+    },
+    "command_template": "ARTEMIS_ARTEMIS_JSONC=qualification/configs/che6852_st008_openai.artemis.jsonc artemis run '<exact goal text>' --standalone --profile pro --assertion-exit --device-serial <leased serial> --locked-app com.palio.ai --disable-planner-validation --verification-level strict --session-id <fresh UUIDv4> --run-id <fresh UUIDv4> --traces-path <run evidence dir>/traces",
+    "locked_app_permission_dialogs": "No. Static source review of artemis/runtime/device_policy.py shows check_foreground requires the resumed package to equal com.palio.ai and latches LeftTestApp otherwise. The Android permission-controller dialog has a different resumed package, so goal_02's OS prompt scenarios must remain NOT-RUN. This behavior has not been runtime tested.",
+    "llm_config": {
+      "path": "qualification/configs/che6852_st008_openai.artemis.jsonc",
+      "sha256": "50b2ea3bf2d5c5c058c28508236090d3e7d988269d798a78abe1d2f217e9fad0",
+      "provider_allowlist": ["openai"],
+      "model": "gpt-6-sol",
+      "planner_validation": "disabled by the pinned command"
     },
     "firebase_debugview": {
       "status": "NOT-RUN",
@@ -88,13 +104,32 @@
     "sdk_publication_or_substitution": false
   },
   "fixture": {
-    "onboarding": "Approved clean first-run app fixture; capture visible UI state at every mapped step. Preserve pre-existing device data.",
-    "permission": "Separate notification and microphone granted, denied, unavailable, suppressed and overlap scenarios; observe real OS dialog visibility. Do not issue a second request for telemetry.",
-    "speaking": "Use an admitted deterministic session fixture; record accepted starts, ready results, terminal errors, recoveries, cancellations and retries as distinct outcomes.",
-    "flash_cards": "Use a deterministic nonempty deck, empty deck and load-failure fixture; distinguish direct deck entry from shared intro-to-deck session.",
-    "ads": "Use controlled display callbacks and confirm actual impression. Preload, failure, suppression and hidden route are not impressions.",
-    "paywall": "Use loaded real weekly/yearly store offers and preserve source. No fabricated product IDs or purchase.",
-    "reset": "Use only the approved app-level clean fixture for first-run cases. Return to each focused scenario through visible UI and record entry state. Do not broad-reset shared device state.",
+    "onboarding": "NOT-RUN until the leader records a clean first-run fixture and the authorized executor verifies it. Synthetic name Artemis QA; do not retain entered values or use personal data.",
+    "permission": "NOT-RUN for event_12 through event_16: locked-app foreground enforcement rejects the permission-controller package. Do not infer displayed prompt from focus loss or a pending native call.",
+    "speaking": {"status":"NOT-RUN","reason":"No admitted deterministic speaking session/backend fixture is pinned; this includes event_20 through event_23."},
+    "flash_cards": {"status":"NOT-RUN","reason":"No deterministic nonempty, empty or load-failure deck fixture is pinned; this includes event_24 through event_27."},
+    "ads": {"status":"NOT-RUN","reason":"No controlled display-callback fixture or verified transitive SDK emission fixture is pinned; this includes event_17, event_18 and event_19."},
+    "paywall": {"status":"NOT-RUN","reason":"No verified real weekly/yearly store offers or authorized sandbox fixture is pinned; this includes event_28 through event_32. Never fabricate product IDs or purchase."},
+    "login": {"status":"NOT-RUN","account":"No authorized nonpersonal Google test account is available; do not sign in. Home after login redirect and authentication-family removal checks remain NOT-RUN (event_11, removal_06)."},
+    "reset": {
+      "app_data": "adb -s <leased serial> shell pm clear com.palio.ai",
+      "permissions": [
+        "adb -s <leased serial> shell pm revoke com.palio.ai android.permission.POST_NOTIFICATIONS",
+        "adb -s <leased serial> shell pm revoke com.palio.ai android.permission.RECORD_AUDIO",
+        "adb -s <leased serial> shell pm clear-permission-flags com.palio.ai android.permission.POST_NOTIFICATIONS user-set user-fixed",
+        "adb -s <leased serial> shell pm clear-permission-flags com.palio.ai android.permission.RECORD_AUDIO user-set user-fixed"
+      ],
+      "scope": "Run only after admission, both reviews and lease. Target the leased serial. Never reset shared device state."
+    },
+    "fa_debug": {
+      "setup": [
+        "adb -s <leased serial> shell setprop debug.firebase.analytics.app com.palio.ai",
+        "adb -s <leased serial> shell setprop log.tag.FA VERBOSE",
+        "adb -s <leased serial> shell setprop log.tag.FA-SVC VERBOSE",
+        "adb -s <leased serial> logcat -v threadtime -s FA FA-SVC"
+      ],
+      "restore": "Before setup, capture getprop debug.firebase.analytics.app, getprop log.tag.FA, and getprop log.tag.FA-SVC. Restore each property to its exact captured value; do not assume .none. Disable the capture process after the observation window."
+    },
     "synchronization": "Visible UI plus timestamped FA/FA-SVC capture. Event assertion requires exact event, allowed parameters, count and ordering in the complete observation window."
   },
   "evidence_contract": {
@@ -125,35 +160,51 @@
     "required_if_class_unqualified": true,
     "positive_pass": "Clean representative testcase pass with complete artifacts.",
     "clean_rerun": "Repeat from the clean reset contract; preserve independent result and artifacts.",
-    "negative_control": "Deliberately fail one assertion; native completed assertion exit must be 1 with the failure evidence retained.",
+    "negative_control": {
+      "assertion_id": "negative_control_title",
+      "wrong_value": "Palios — WRONG TITLE",
+      "expected_exit": 1,
+      "proof": "complete native summary has exactly this failed item, the observed title is different, marker ARTEMIS_ASSERTION_EXIT=1 is present, and process exit is 1"
+    },
     "cleanup_release": "Preserve evidence, stop only run-owned processes, restore only changed settings, and obtain Android leader verification of device/lease release.",
     "missing_or_uncertain_evidence": "NOT-RUN or inconclusive; never qualify. Uncertain cleanup keeps target unavailable with named recovery owner."
   },
   "goals": [
     {
       "id": "goal_01",
-      "text": "Run the CHE-6852 reviewed ST008 analytics testcase exactly as pinned. Use the clean first-run fixture, observe each visible onboarding step and Home, verify locale on entry, and classify fullscreen native only as deferred. Capture privacy-safe timestamped FA/FA-SVC evidence and fail closed on missing screens, wrong event names, parameters, counts, ordering or incomplete logs.",
-      "sha256": "9a10a9af32933aef934baa7406b72c812403599c5c1aa5a287efdf813dc0dd38"
+      "assertion_ids": ["event_01","event_02","event_03","event_04","event_05","event_06","event_07","event_08","event_09","event_10","event_11","removal_02","removal_04"],
+      "text": "NOT-RUN until the Android leader records an approved clean first-run fixture: event_01 through event_09, removal_02, and removal_04 have unknown counts. With that fixture, observe and assert every listed visible onboarding step in order; enter only the synthetic name Artemis QA; verify the native locale on entry; stop at the login redirect without signing in; capture timestamped FA/FA-SVC logs and visible-state evidence. Assert event_01=splash_scr_view, event_02=obd_1_scr_view, event_03=obd_2_scr_view, event_04=obd_3_scr_view, event_05=lfo_1_scr_view, event_06=lfo_2_scr_view with language=<selected locale tag on entry: en|hi|pt-pt|es-mx|es-es|fr|vi>, event_07=obd_6_scr_view, event_08=obd_7_scr_view, event_09=obd_8_scr_view, event_10=obd_full_8_scr_view as DEFERRED only, event_11=home_scr_view as NOT-RUN without an authorized test login. Assert exactly one event for each visible trigger from event_01 through event_09, with only its row parameters and the observed step order. Assert removal_02=splash_bootstrap_started|splash_bootstrap_completed|splash_bootstrap_failed and removal_04=language_selected|onboarding_started|onboarding_next_tapped|onboarding_completed absent with count 0 in the complete captured onboarding window; otherwise mark NOT-RUN. Missing UI or incomplete capture is not PASS.",
+      "sha256": "cbf80479c72807f7e3f1939980e91b108ddd45af18eebeb2397187283627817a"
     },
     {
       "id": "goal_02",
-      "text": "Exercise notification and microphone permissions in isolated scenarios and overlapping notification/microphone requests. Distinguish an actually displayed OS dialog from focus loss, pending native calls, bridge errors, existing grants, unsupported OS, suppressed requests and unavailable status. Verify safe speaking failure, no false notification telemetry and no extra prompt. Capture privacy-safe UI and complete timestamped FA/FA-SVC logs; fail closed on ambiguity.",
-      "sha256": "63e60a862febe4f3254706d370f20660ee767fc34c1beb1c08c15c13686b46ce"
+      "assertion_ids": ["event_12","event_13","event_14","event_15","event_16","removal_05"],
+      "text": "NOT-RUN: --locked-app com.palio.ai does not permit the Android permission-controller foreground package, so do not attempt notification or microphone OS dialogs. Keep event_12=noti_permission_view with source=app_entry|account, event_13=noti_permission_allow, event_14=microphone_permission_view with source=speaking, event_15=microphone_permission_allow, event_16=microphone_permission_denied and removal_05=permission_request_tapped|permission_result|account_notifications_enable_tapped|account_notification_permission_result explicitly NOT-RUN. Record no observed count for these rows. A future admitted run may assert these only after the runner lock policy changes and both reviewers approve that candidate. No focus loss or pending call is proof of a displayed dialog.",
+      "sha256": "585989cb26b119ad9c3d66562c57d609ad037c6b85a6374645f886590479d776"
     },
     {
       "id": "goal_03",
-      "text": "Exercise speaking and flash-card accepted starts, real result-ready returns, terminal failures, recovery, empty/load failure, completion and explicit retry. Reconcile counts to real accepted attempts and real returns. Do not count cancellation, timers alone, empty decks, stale callbacks, recovered interruptions or duplicate callbacks as completion. Preserve assertion ledger and privacy-safe evidence; fail closed on count mismatch.",
-      "sha256": "6f11582353b14f3e852928f45beb8bf1d311edb87a7712334b04528625f9d265"
+      "assertion_ids": ["event_20","event_21","event_22","event_23","event_24","event_25","event_26","event_27","removal_09"],
+      "text": "NOT-RUN until the speaking session and flash-card deck fixtures are pinned by the Android leader. Required assertion items are event_20=feature_speaking_scr_view, event_21=feature_speaking_start, event_22=feature_speaking_finish, event_23=feature_speaking_fail with error_code=microphone_denied|start_failed|connection_failed|invalid_token|timeout|unknown, event_24=feature_flash_card_scr_view, event_25=feature_flash_card_start, event_26=feature_flash_card_success, event_27=feature_flash_card_fail with error_code=load_failed|empty_deck|timeout|unknown, and removal_09=lesson_selected|lesson_start|lesson_end|lesson_complete. In a fixture-backed run, assert one start per accepted attempt, at most one real finish per ready result, one fail per terminal failed attempt, one feature view per session, one flash-card start per attempt, one success per nonempty deck completion, and one fail per terminal deck failure. Preserve native ledger and timestamped logs; no fixture means NOT-RUN, with count unknown and never zero.",
+      "sha256": "e0607cc2b48efbf36892c8fee210a66d57fe8c0e1b1fe4aa90b448d5c47d072a"
     },
     {
       "id": "goal_04",
-      "text": "Exercise only deterministic ad and paywall paths. Confirm actual impressions, original source, real loaded store product IDs, accepted clicks and actual transitive SDK emissions. Keep Firebase DebugView and store-sandbox purchase NOT-RUN until their own authorized fixtures and access exist. Never fabricate an impression or purchase and never spend money.",
-      "sha256": "da6fc291bd1d2700e24d1483730efa0b4e1f3a6e4f7d05975ed564f507e6e9c9"
+      "assertion_ids": ["event_17","event_18","event_19","event_28","event_29","event_30","event_31","event_32","removal_10","removal_11"],
+      "text": "NOT-RUN until verified ad callbacks, real store offers and authorized sandbox fixtures exist. Required assertion items are event_17=inter_splash_scr_view, event_18=inter_home_scr_view, event_19=app_open_scr_view with placement=open_resume, event_28=paywall_scr_view with source=home|speaking|direct and paywall_id=premium_weekly_trial, event_29=paywall_scr_view with source=home|speaking|direct and paywall_id=premium_yearly_exit, event_30=paywall_btn_click with button=purchase|restore|terms_of_use|privacy_policy|close, product_id=<real weekly product ID or none>, source=home|speaking|direct, event_31=paywall_btn_click with button=purchase|close, product_id=<real yearly product ID for purchase or none>, source=home|speaking|direct, event_32=in_app_purchase with automatic schema only, removal_10=interstitial_show|interstitial_failed, and removal_11=premium_purchase_attempt|premium_purchase_success|premium_purchase_cancelled|premium_purchase_failed|premium_restore_attempt|premium_restore_success|premium_restore_failed. If later fixture-backed, assert exactly one event per accepted impression or click trigger and inspect actual transitive SDK emissions. No fixture means NOT-RUN and count unknown. Never fabricate impressions or purchases, disable automatic collection, or spend money.",
+      "sha256": "6dae3ee6e9ebfef524a9d9d71b9c5ba8051836c646a3757c227c5b9943303114"
     },
     {
       "id": "goal_05",
-      "text": "Check every exact removed custom event family against complete actual SDK emission windows while preserving automatic Firebase collection. If the AVD class is unqualified, execute a clean representative pass, a clean rerun and a deliberate failed assertion with native exit 1. Preserve artifacts and have the Android leader verify cleanup and release. Missing logs or incomplete evidence are not an absence pass.",
-      "sha256": "9f624b5fad20cfb99e68023c9705d7b1de60741e2b330abdace3ca9647771ab8"
+      "assertion_ids": ["removal_01","removal_02","removal_03","removal_04","removal_05","removal_06","removal_07","removal_08","removal_09","removal_10","removal_11","removal_12"],
+      "text": "For each complete actual SDK emission window, assert zero occurrences for each exact removed family: removal_01=app_open|app_foreground|app_background; removal_02=splash_bootstrap_started|splash_bootstrap_completed|splash_bootstrap_failed; removal_03=navigation_route_changed|screen_view; removal_04=language_selected|onboarding_started|onboarding_next_tapped|onboarding_completed; removal_05=permission_request_tapped|permission_result|account_notifications_enable_tapped|account_notification_permission_result; removal_06=login_google_start|login_google_success|login_google_cancelled|login_google_failed|login_backend_failed|login_google_error|logout_tapped|logout_success; removal_07=home_tab_selected|practice_tab_selected|redeem_tab_selected|rank_tab_selected|account_tab_selected; removal_08=account_language_opened|account_language_changed|account_rate_app_tapped|account_contact_us_tapped|account_share_app_tapped; removal_09=lesson_selected|lesson_start|lesson_end|lesson_complete; removal_10=interstitial_show|interstitial_failed; removal_11=premium_purchase_attempt|premium_purchase_success|premium_purchase_cancelled|premium_purchase_failed|premium_restore_attempt|premium_restore_success|premium_restore_failed; removal_12=api_call_failed|api_call_timeout. Mark a family NOT-RUN when its flow fixture or complete SDK capture is unavailable; missing logs are not zero. Preserve automatic Firebase collection. If the device class is unqualified, use the qualification negative control assertion_id=negative_control_title with wrong value `Palios — WRONG TITLE`; require one failed native item, ARTEMIS_ASSERTION_EXIT=1 and process exit 1. Retain artifacts and obtain leader cleanup/release verification.",
+      "sha256": "ec179c68e5b7de21cbe1a9af9e8850f89e5d0fa41d5f46985ab3f04b4addf4a1"
+    },
+    {
+      "id": "goal_06_negative_control",
+      "assertion_ids": ["negative_control_title"],
+      "text": "Run the approved clean onboarding fixture as a separate qualification attempt. Assert assertion_id=negative_control_title: the visible Palios app title is exactly `Palios — WRONG TITLE`. The native summary must contain exactly one failed item for this assertion, the observed title must differ from the wrong value, stdout must contain ARTEMIS_ASSERTION_EXIT=1, and the process exit must equal 1. Keep this expected failure separate from positive runs; exit 0, exit 2, a missing marker, incomplete evidence or another failed item invalidates the control.",
+      "sha256": "f01f75a357c0182ef06c860dc093dba5fad7819bbf99c96b436b4cc8824ccbac"
     }
   ],
   "coverage": {

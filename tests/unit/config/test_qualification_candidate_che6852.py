@@ -96,7 +96,7 @@ def _read_candidate():
     return json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))
 
 
-def test_receipt_pins_runner_app_inputs_and_no_spend_boundary():
+def test_receipt_pins_runner_app_inputs_and_provider_authorization():
     receipt = _read_candidate()
     sources = receipt["source_candidate"]
 
@@ -126,7 +126,16 @@ def test_receipt_pins_runner_app_inputs_and_no_spend_boundary():
     assert execution["model"]["metered_spend_possible"] is True
     assert execution["model"]["provider_call_made"] is False
     assert execution["model"]["spend_decision_owner"] == "Android device squad leader"
-    assert "no spend" in execution["model"]["open_point"].lower()
+    authorization = execution["model"]["spend_authorization"]
+    assert authorization == {
+        "status": "AUTHORIZED_WITH_CAP",
+        "provider": "openai",
+        "model": "gpt-6-sol",
+        "max_usd_per_run": 5,
+        "max_usd_total": 15,
+    }
+    assert "both independent reviews" in execution["model"]["open_point"]
+    assert "AVD admission" in execution["model"]["open_point"]
 
     testcase = sources["testcase_source"]
     journey_path = REPO_ROOT / testcase["journey_path"]
@@ -215,3 +224,88 @@ def test_journey_carries_fixture_privacy_qualification_and_review_guards():
     assert review["same_revision_required"] is True
     assert review["must_precede_execution"] is True
     assert review["author_approves_own_testcase"] is False
+
+
+def test_candidate_binds_executable_assertions_command_provider_and_fixture_limits(monkeypatch):
+    receipt = _read_candidate()
+    journey = (
+        REPO_ROOT / receipt["source_candidate"]["testcase_source"]["journey_path"]
+    ).read_text(encoding="utf-8")
+
+    for goal in receipt["goals"]:
+        assert goal["assertion_ids"]
+        for assertion_id in goal["assertion_ids"]:
+            assert assertion_id in goal["text"]
+            assert assertion_id in journey
+
+    goal_by_assertion = {
+        assertion_id: goal["text"]
+        for goal in receipt["goals"]
+        for assertion_id in goal["assertion_ids"]
+    }
+    for item in receipt["coverage"]["event_assertions"]:
+        assert f"{item['assertion_id']}={item['event']}" in goal_by_assertion[item["assertion_id"]]
+    removal_goal = goal_by_assertion["removal_12"]
+    for item in receipt["coverage"]["removal_assertions"]:
+        assert item["assertion_id"] in removal_goal
+        for name in item["removed_names"]:
+            assert name in removal_goal
+
+    command = receipt["execution"]["command_template"]
+    for flag in (
+        "--standalone",
+        "--profile pro",
+        "--assertion-exit",
+        "--device-serial <leased serial>",
+        "--locked-app com.palio.ai",
+        "--disable-planner-validation",
+    ):
+        assert flag in command
+    assert "No." in receipt["execution"]["locked_app_permission_dialogs"]
+    assert "must remain NOT-RUN" in receipt["execution"]["locked_app_permission_dialogs"]
+
+    config = receipt["execution"]["llm_config"]
+    config_path = REPO_ROOT / config["path"]
+    config_bytes = config_path.read_bytes()
+    assert hashlib.sha256(config_bytes).hexdigest() == config["sha256"]
+    config_text = config_bytes.decode("utf-8")
+    assert '"validator_pixel_safety_net"' in config_text
+    assert '"planner_validation"' in config_text
+    config_data = json.loads(config_text)
+    for node in ("validator_pixel_safety_net", "planner_validation"):
+        assert config_data[node]["provider"] == "openai"
+        assert config_data[node]["model"] == "gpt-6-sol"
+        assert config_data[node]["fallback"]["provider"] == "openai"
+        assert config_data[node]["fallback"]["model"] == "gpt-6-sol"
+
+    from artemis.config.llm import parse_llm_config
+
+    monkeypatch.setenv("ARTEMIS_ARTEMIS_JSONC", str(config_path))
+    loaded = parse_llm_config()
+    for node in ("validator_pixel_safety_net", "planner_validation"):
+        model = loaded.get_agent(node)
+        assert model.provider == "openai"
+        assert model.model == "gpt-6-sol"
+        assert model.fallback.provider == "openai"
+        assert model.fallback.model == "gpt-6-sol"
+
+    control = receipt["qualification"]["negative_control"]
+    assert control == {
+        "assertion_id": "negative_control_title",
+        "wrong_value": "Palios — WRONG TITLE",
+        "expected_exit": 1,
+        "proof": "complete native summary has exactly this failed item, the observed title is different, marker ARTEMIS_ASSERTION_EXIT=1 is present, and process exit is 1",
+    }
+    assert control["assertion_id"] in journey
+    assert control["wrong_value"] in journey
+
+    fixture = receipt["fixture"]
+    assert fixture["reset"]["app_data"].endswith("shell pm clear com.palio.ai")
+    assert len(fixture["reset"]["permissions"]) == 4
+    assert fixture["login"]["status"] == "NOT-RUN"
+    assert "getprop debug.firebase.analytics.app" in fixture["fa_debug"]["restore"]
+    assert "do not assume .none." in fixture["fa_debug"]["restore"]
+    assert len(fixture["fa_debug"]["setup"]) == 4
+    for scenario in ("speaking", "flash_cards", "ads", "paywall"):
+        assert fixture[scenario]["status"] == "NOT-RUN"
+    assert "obd_full_8_scr_view" in journey and "DEFERRED" in journey
