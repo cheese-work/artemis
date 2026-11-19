@@ -34,7 +34,7 @@ from artemis.runtime.process_probe import pid_is_alive
 
 
 class DeviceBusyError(RuntimeError):
-    """Raised when another Artemis process already owns a device."""
+    """Raised when Artemis cannot acquire a device for execution."""
 
 
 class ConcurrencyMode:
@@ -557,38 +557,49 @@ class DeviceExecutionLock:
 
     @classmethod
     @contextmanager
-    def _admission_guard(cls) -> Iterator[None]:
-        """Hold the broker's claim guard while creating an owner record.
+    def _admission_guard(cls) -> Iterator[bool]:
+        """Try to hold the broker's claim guard while creating an owner record.
 
         The DLP-1 broker reads Artemis owner records inside the same exclusion,
         so it never sees a half-written record or races a new claim into a grant.
         """
         path = os.getenv(cls.ADMISSION_GUARD_ENV)
         if not path:
-            yield
+            yield True
             return
         import fcntl  # POSIX only; a configured guard on another OS fails closed.
 
         fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            yield
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+            else:
+                yield True
         finally:
             os.close(fd)
 
     def _try_acquire_owner_lock(self) -> bool:
-        with self._admission_guard():
+        with self._admission_guard() as admitted:
+            if not admitted:
+                return False
             guard = os.getenv(self.ADMISSION_GUARD_ENV)
             database = os.getenv("ARTEMIS_DEVICE_CLAIMS_DB")
             if guard or database:
                 if not guard or not database:
                     return False
-                from device_lease.claims import check_sdk_available
+                from device_lease.claims import UnknownSdkClaimIdentity, check_sdk_available
 
                 try:
                     check_sdk_available(
                         database, guard, self.device_id, self.path.parent, self.path
                     )
+                except UnknownSdkClaimIdentity as exc:
+                    raise DeviceBusyError(
+                        "This phone connection is not registered with the device broker. "
+                        "Contact an administrator to enable it."
+                    ) from exc
                 except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
                     return False  # Missing/stale census, SQL failure or conflict: no owner file.
             return self._try_acquire_owner_lock_unguarded()

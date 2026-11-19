@@ -478,3 +478,20 @@ def test_owner_lock_waits_for_shared_admission_guard(tmp_path, monkeypatch):
     worker.join(timeout=5)
     assert lock.path.exists()
     lock.release()
+
+
+def test_held_admission_guard_respects_acquire_timeout(tmp_path, monkeypatch):
+    import fcntl
+    from concurrent.futures import ThreadPoolExecutor
+
+    guard = tmp_path / "claims.guard"
+    monkeypatch.setenv("ARTEMIS_DEVICE_ADMISSION_GUARD", str(guard))
+    monkeypatch.setenv("ARTEMIS_DEVICE_CLAIMS_DB", str(tmp_path / "leases.sqlite3"))
+    lock = DeviceExecutionLock("emulator-5554")
+    with ThreadPoolExecutor() as workers, guard.open("wb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        future = workers.submit(lock.acquire, timeout=0.05, poll_interval=0.01)
+        with pytest.raises(DeviceBusyError, match="Timed out waiting for the Artemis device queue"):
+            future.result(timeout=1)
+    assert not lock.path.exists()
+    assert not list(lock.queue_dir.glob("*.wait"))

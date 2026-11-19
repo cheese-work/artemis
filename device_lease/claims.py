@@ -15,6 +15,10 @@ import time
 import uuid
 
 
+class UnknownSdkClaimIdentity(ValueError):
+    """The SDK's requested device is not an alias in the broker's census."""
+
+
 def _text(*values):
     if any(not isinstance(v, str) or not v.strip() for v in values):
         raise ValueError("claim identity required")
@@ -93,7 +97,10 @@ def check_sdk_available(db_path, guard_path, alias, lock_dir, own_path):
         source, aliases = _source(conn, guard_path)
         if Path(source[6]).resolve() != Path(lock_dir).resolve():
             raise ValueError("SDK lock directory differs from census")
-        _available(conn, _canonical(aliases, alias), aliases, lock_dir, own_path=own_path)
+        _text(alias)
+        if alias not in aliases:
+            raise UnknownSdkClaimIdentity("unknown claim identity")
+        _available(conn, aliases[alias], aliases, lock_dir, own_path=own_path)
 
 
 class ClaimLedger:

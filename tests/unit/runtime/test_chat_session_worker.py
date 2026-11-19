@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from artemis.data_engine.chat_sessions import ChatStore
+from artemis.runtime import device_lock
 from artemis.runtime.chat_session_worker import run_chat_session
 
 
@@ -238,3 +239,38 @@ async def test_acquisition_failure_is_clear_and_releases_session_claim(store):
             "SELECT dedupe_id, session_id, status FROM lifecycle_outbox"
         ).fetchone()
     assert outbox_event == ("run:outcome", "run", "failed")
+
+
+@pytest.mark.asyncio
+async def test_unknown_bridge_fails_startup_and_explains_why(store, tmp_path, monkeypatch):
+    guard = tmp_path / "claims.guard"
+    database = tmp_path / "leases.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE android_claim_source (singleton, generation, complete, observed_at, "
+            "max_age, aliases, guard_path, lock_dir)"
+        )
+        connection.execute(
+            "INSERT INTO android_claim_source VALUES (1, 1, 1, unixepoch(), 60, ?, ?, ?)",
+            ('{"rig-usb":"rig-usb"}', str(guard), str(tmp_path)),
+        )
+    monkeypatch.setattr(device_lock, "get_temp_dir", lambda _: tmp_path)
+    monkeypatch.setenv("ARTEMIS_DEVICE_ADMISSION_GUARD", str(guard))
+    monkeypatch.setenv("ARTEMIS_DEVICE_CLAIMS_DB", str(database))
+    lease = device_lock.DeviceExecutionLock("127.0.0.1:37607", session_id="run")
+
+    async def execute(turn):
+        pytest.fail("A device missing from the broker census must not run")
+
+    with pytest.raises(device_lock.DeviceBusyError, match="not registered with the device broker"):
+        await asyncio.wait_for(run_chat_session(store, "run", lease, execute), timeout=1)
+
+    chat = store.get("run")
+    assert chat["turns"][0]["status"] == "failed"
+    assert any(
+        message["role"] == "agent" and "not registered with the device broker" in message["content"]
+        for message in chat["messages"]
+    )
+    assert chat["lease_pid"] is None
+    assert not lease.path.exists()
+    assert not list(lease.queue_dir.glob("*.wait"))
