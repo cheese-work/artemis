@@ -6,6 +6,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RECEIPT_PATH = REPO_ROOT / "qualification/candidates/che6852_st008_event_map.v1.json"
 TICK = chr(96)
+EVENT_MATRIX_SHA256 = "f660dc7b32ba9c8f3e17f3f9395d67f93f3ab332d1c5c41a67fa3d5624f65097"
+REMOVAL_MATRIX_SHA256 = "1b652f6eece9b1ce8fe06023a8f8d436dd336c329e0d596c6bd7ecf0e5559156"
+NONRUN_ASSERTIONS = {
+    "event_10",
+    "event_11",
+    "removal_05",
+    "removal_06",
+    "removal_09",
+    "removal_10",
+    "removal_11",
+}
 
 EXPECTED_EVENTS = [
     "splash_scr_view",
@@ -96,6 +107,18 @@ def _read_candidate():
     return json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))
 
 
+def _model_values(value):
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key == "model":
+                yield nested
+            else:
+                yield from _model_values(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _model_values(nested)
+
+
 def test_receipt_pins_runner_app_inputs_and_provider_authorization():
     receipt = _read_candidate()
     sources = receipt["source_candidate"]
@@ -117,6 +140,8 @@ def test_receipt_pins_runner_app_inputs_and_provider_authorization():
     assert sources["tevo_ads_override"]["commit_sha"] == (
         "65e2050d61683151559580802de9697171788aa3"
     )
+    assert sources["input_digests"]["event_matrix_sha256"] == EVENT_MATRIX_SHA256
+    assert sources["input_digests"]["removal_matrix_sha256"] == REMOVAL_MATRIX_SHA256
 
     execution = receipt["execution"]
     assert execution["status"] == "NOT-RUN"
@@ -232,8 +257,36 @@ def test_candidate_binds_executable_assertions_command_provider_and_fixture_limi
         REPO_ROOT / receipt["source_candidate"]["testcase_source"]["journey_path"]
     ).read_text(encoding="utf-8")
 
+    goals_by_id = {goal["id"]: goal for goal in receipt["goals"]}
+    goal_01 = goals_by_id["goal_01"]
+    goal_05 = goals_by_id["goal_05"]
+    goal_06 = goals_by_id["goal_06_negative_control"]
+    for nonrunnable in ("goal_02", "goal_03", "goal_04"):
+        assert goals_by_id[nonrunnable]["assertion_ids"] == []
+        assert "DO NOT INVOKE" in goals_by_id[nonrunnable]["text"]
+
+    all_goal_ids = {
+        assertion_id for goal in receipt["goals"] for assertion_id in goal["assertion_ids"]
+    }
+    assert not (NONRUN_ASSERTIONS & all_goal_ids)
+    assert set(goal_01["assertion_ids"]) == {
+        *(f"event_{index:02d}" for index in range(1, 10)),
+        "removal_02",
+        "removal_04",
+    }
+    assert set(goal_05["assertion_ids"]) == {
+        f"removal_{index:02d}" for index in (1, 2, 3, 4, 7, 8, 12)
+    }
+    assert "negative_control_title" not in goal_05["text"]
+    assert "WRONG TITLE" not in goal_05["text"]
+    assert "negative_control_title" in goal_06["text"]
+    assert receipt["result_rule"]["exit_zero_sets_no_row_status"] is True
+    assert "passed native ledger item" in receipt["result_rule"]["observed_requires"]
+    assert "assertion_id" in receipt["result_rule"]["observed_requires"]
+    assert "count" in receipt["result_rule"]["observed_requires"]
+    assert "parameters" in receipt["result_rule"]["observed_requires"]
+
     for goal in receipt["goals"]:
-        assert goal["assertion_ids"]
         for assertion_id in goal["assertion_ids"]:
             assert assertion_id in goal["text"]
             assert assertion_id in journey
@@ -244,12 +297,21 @@ def test_candidate_binds_executable_assertions_command_provider_and_fixture_limi
         for assertion_id in goal["assertion_ids"]
     }
     for item in receipt["coverage"]["event_assertions"]:
-        assert f"{item['assertion_id']}={item['event']}" in goal_by_assertion[item["assertion_id"]]
-    removal_goal = goal_by_assertion["removal_12"]
+        if item["assertion_id"] in goal_by_assertion:
+            assert (
+                f"{item['assertion_id']}={item['event']}" in goal_by_assertion[item["assertion_id"]]
+            )
+        else:
+            assert item["execution_status"] in {"NOT-RUN", "DEFERRED"}
+            assert item["observed_count"] == "unknown"
     for item in receipt["coverage"]["removal_assertions"]:
-        assert item["assertion_id"] in removal_goal
-        for name in item["removed_names"]:
-            assert name in removal_goal
+        if item["assertion_id"] in goal_by_assertion:
+            removal_goal = goal_by_assertion[item["assertion_id"]]
+            for name in item["removed_names"]:
+                assert name in removal_goal
+        else:
+            assert item["execution_status"] == "NOT-RUN"
+            assert item["observed_count"] == "unknown"
 
     command = receipt["execution"]["command_template"]
     for flag in (
@@ -259,13 +321,36 @@ def test_candidate_binds_executable_assertions_command_provider_and_fixture_limi
         "--device-serial <leased serial>",
         "--locked-app com.palio.ai",
         "--disable-planner-validation",
+        "env -u GOOGLE_API_KEY -u GEMINI_API_KEY",
+        "realpath",
+        "--traces-path <run evidence dir>/traces",
     ):
         assert flag in command
-    assert "No." in receipt["execution"]["locked_app_permission_dialogs"]
-    assert "must remain NOT-RUN" in receipt["execution"]["locked_app_permission_dialogs"]
+    assert "CONFIG_SHA256" not in command
+    config_digest = receipt["execution"]["llm_config"]["sha256"]
+    assert f"= '{config_digest}'" in command
+    assert "set -euo pipefail" in command
+    assert "--locked-app com.palio.ai" in command
+    assert (
+        "when the device policy is enabled"
+        in receipt["execution"]["locked_app_permission_dialogs"].lower()
+    )
+    assert receipt["execution"]["provider_preflight"]["dotenv_google_keys"] == "stop_if_present"
+    assert "workspace .env" in receipt["execution"]["provider_preflight"]["check_sources"]
+    assert (
+        "stop if any source sets google_api_key or gemini_api_key"
+        in receipt["execution"]["provider_preflight"]["check_sources"].lower()
+    )
+    assert "meter" in receipt["execution"]["spend_rule"].lower()
+    assert "stop" in receipt["execution"]["spend_rule"].lower()
+    checkout = receipt["execution"]["checkout"]
+    assert checkout["repository"] == "https://github.com/cheese-work/artemis"
+    assert checkout["pull_request"] == 311
+    assert "published PR #311 head SHA" in checkout["testcase_commit_sha"]
 
     config = receipt["execution"]["llm_config"]
     config_path = REPO_ROOT / config["path"]
+    assert 'ARTEMIS_ARTEMIS_JSONC="$CONFIG_PATH"' in command
     config_bytes = config_path.read_bytes()
     assert hashlib.sha256(config_bytes).hexdigest() == config["sha256"]
     config_text = config_bytes.decode("utf-8")
@@ -289,9 +374,19 @@ def test_candidate_binds_executable_assertions_command_provider_and_fixture_limi
         assert model.fallback.provider == "openai"
         assert model.fallback.model == "gpt-6-sol"
 
+    from artemis.config.agent import load_agent_config
+
+    monkeypatch.setenv("ARTEMIS_ARTEMIS_JSONC", str(config_path))
+    agent_config = load_agent_config()
+    assert set(_model_values(agent_config.model_dump(mode="python"))) == {"gpt-6-sol"}
+
     control = receipt["qualification"]["negative_control"]
     assert control == {
         "assertion_id": "negative_control_title",
+        "locale": "en",
+        "screen": "Welcome onboarding screen",
+        "text_source": "onboarding/app_en.arb key welcomeMessage",
+        "actual_value": "Start practicing English with Palios, your AI speaking buddy.",
         "wrong_value": "Palios — WRONG TITLE",
         "expected_exit": 1,
         "proof": "complete native summary has exactly this failed item, the observed title is different, marker ARTEMIS_ASSERTION_EXIT=1 is present, and process exit is 1",
@@ -301,7 +396,19 @@ def test_candidate_binds_executable_assertions_command_provider_and_fixture_limi
 
     fixture = receipt["fixture"]
     assert fixture["reset"]["app_data"].endswith("shell pm clear com.palio.ai")
-    assert len(fixture["reset"]["permissions"]) == 4
+    assert fixture["onboarding"]["status"] == "RUNNABLE"
+    assert fixture["onboarding"]["locale"] == "en"
+    assert fixture["onboarding"]["fixture"]
+    assert fixture["reset"]["launch_permission"]["permission"] == (
+        "android.permission.POST_NOTIFICATIONS"
+    )
+    assert fixture["reset"]["launch_permission"]["grant"] in fixture["reset"]["commands"]
+    assert fixture["reset"]["launch_permission"]["snapshot"] in fixture["reset"]["commands"]
+    assert fixture["reset"]["launch_permission"]["restore"] in fixture["reset"]["commands"]
+    assert "device policy is enabled" in receipt["execution"]["locked_app_permission_dialogs"]
+    assert "origin=app" in receipt["result_rule"]["removed_family_filter"]
+    assert "fa-fa-svc-threadtime.log" in fixture["synchronization"]
+    assert "fa-fa-svc-threadtime.log" in goals_by_id["goal_05"]["text"]
     assert fixture["login"]["status"] == "NOT-RUN"
     assert "getprop debug.firebase.analytics.app" in fixture["fa_debug"]["restore"]
     assert "do not assume .none." in fixture["fa_debug"]["restore"]

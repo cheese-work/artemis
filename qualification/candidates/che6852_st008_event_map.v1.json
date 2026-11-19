@@ -36,7 +36,8 @@
     },
     "testcase_source": {
       "journey_path": "qualification/journeys/che6852_st008_event_map.v1.md",
-      "journey_digest_sha256": "7607fccc00856174918f819acb8bf9c3116e812dfa784e4e212d3375e67d7b43",
+      "journey_digest_sha256": "361894731875e9b4862af2dfa6eb9342737219cef7b2ffefce966fd16e133e6d",
+      "checkout": "Use the cheese-work/artemis checkout for PR #311 at the exact candidate head SHA in the CHE-6843 handoff. From its root, git rev-parse HEAD must equal that SHA before execution.",
       "revision_policy": "A change to journey, receipt, runner, app source, effective lock, override, fixture contract or pinned goal requires a new candidate revision and fresh independent reviews."
     }
   },
@@ -83,11 +84,24 @@
       },
       "open_point": "No provider call until both independent reviews approve this exact candidate and the Android device squad records AVD admission."
     },
-    "command_template": "ARTEMIS_ARTEMIS_JSONC=qualification/configs/che6852_st008_openai.artemis.jsonc artemis run '<exact goal text>' --standalone --profile pro --assertion-exit --device-serial <leased serial> --locked-app com.palio.ai --disable-planner-validation --verification-level strict --session-id <fresh UUIDv4> --run-id <fresh UUIDv4> --traces-path <run evidence dir>/traces",
-    "locked_app_permission_dialogs": "No. Static source review of artemis/runtime/device_policy.py shows check_foreground requires the resumed package to equal com.palio.ai and latches LeftTestApp otherwise. The Android permission-controller dialog has a different resumed package, so goal_02's OS prompt scenarios must remain NOT-RUN. This behavior has not been runtime tested.",
+    "command_template": "set -euo pipefail; ARTEMIS_CHECKOUT=\"$(git rev-parse --show-toplevel)\"; test \"$(git rev-parse HEAD)\" = '<candidate head SHA from CHE-6843 handoff>'; EXPECTED_CONFIG_PATH=\"$(realpath \"$ARTEMIS_CHECKOUT\")/qualification/configs/che6852_st008_openai.artemis.jsonc\"; CONFIG_PATH=\"$(realpath \"$ARTEMIS_CHECKOUT/qualification/configs/che6852_st008_openai.artemis.jsonc\")\"; test \"$CONFIG_PATH\" = \"$EXPECTED_CONFIG_PATH\"; test \"$(sha256sum \"$CONFIG_PATH\" | cut -d' ' -f1)\" = '509c567dd553de882f9b5f9d952e7f91a97007bc326ded3fa6336e85f3ea1c6b'; env -u GOOGLE_API_KEY -u GEMINI_API_KEY ARTEMIS_ARTEMIS_JSONC=\"$CONFIG_PATH\" artemis run '<exact goal text>' --standalone --profile pro --assertion-exit --device-serial <leased serial> --locked-app com.palio.ai --disable-planner-validation --verification-level strict --session-id <fresh UUIDv4> --run-id <fresh UUIDv4> --traces-path <run evidence dir>/traces",
+    "locked_app_permission_dialogs": "When the device policy is enabled for the leased serial, static source review of artemis/runtime/device_policy.py shows the policy requires the resumed package to equal com.palio.ai and latches LeftTestApp otherwise. The permission-controller dialog has a different resumed package. On an unrestricted serial this lock is not enforced as a foreground lock. Runtime behavior is untested; goal_02 remains do not invoke under this candidate.",
+    "provider_preflight": {
+      "dotenv_google_keys": "stop_if_present",
+      "check_sources": "Before startup, inspect variable names only in the workspace .env, get_env_file() result and GLOBAL_APP_DIR/.env. Stop if any source sets GOOGLE_API_KEY or GEMINI_API_KEY. Do not print or retain values.",
+      "environment": "Run through env -u GOOGLE_API_KEY -u GEMINI_API_KEY as pinned in command_template."
+    },
+    "spend_rule": "Record metered provider spend for each run and cumulative total. Stop before any run that could exceed USD 5 per run or USD 15 total.",
+    "checkout": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "pull_request": 311,
+      "testcase_commit_sha": "Exact published PR #311 head SHA returned on CHE-6843; executor verifies it equals git rev-parse HEAD before execution.",
+      "revision": "Use the cheese-work/artemis PR #311 checkout. Record its exact published testcase commit SHA and verify git rev-parse HEAD matches before execution."
+    },
     "llm_config": {
       "path": "qualification/configs/che6852_st008_openai.artemis.jsonc",
-      "sha256": "50b2ea3bf2d5c5c058c28508236090d3e7d988269d798a78abe1d2f217e9fad0",
+      "absolute_path_rule": "Resolve with realpath from the PR #311 checkout root. Stop unless it equals the expected absolute checkout-root path and its SHA-256 matches.",
+      "sha256": "509c567dd553de882f9b5f9d952e7f91a97007bc326ded3fa6336e85f3ea1c6b",
       "provider_allowlist": ["openai"],
       "model": "gpt-6-sol",
       "planner_validation": "disabled by the pinned command"
@@ -104,8 +118,8 @@
     "sdk_publication_or_substitution": false
   },
   "fixture": {
-    "onboarding": "NOT-RUN until the leader records a clean first-run fixture and the authorized executor verifies it. Synthetic name Artemis QA; do not retain entered values or use personal data.",
-    "permission": "NOT-RUN for event_12 through event_16: locked-app foreground enforcement rejects the permission-controller package. Do not infer displayed prompt from focus loss or a pending native call.",
+    "onboarding": {"status":"RUNNABLE","locale":"en","fixture":"Pinned app-data reset, POST_NOTIFICATIONS grant from reset.launch_permission, and synthetic name Artemis QA. The same clean Welcome-screen fixture supports the separate goal_06 negative control."},
+    "permission": "Do not invoke goal_02. Permission prompt behavior is untested on an unrestricted serial and blocked when device policy enforces locked-app foreground checks. Do not infer displayed prompt from focus loss or a pending native call.",
     "speaking": {"status":"NOT-RUN","reason":"No admitted deterministic speaking session/backend fixture is pinned; this includes event_20 through event_23."},
     "flash_cards": {"status":"NOT-RUN","reason":"No deterministic nonempty, empty or load-failure deck fixture is pinned; this includes event_24 through event_27."},
     "ads": {"status":"NOT-RUN","reason":"No controlled display-callback fixture or verified transitive SDK emission fixture is pinned; this includes event_17, event_18 and event_19."},
@@ -113,13 +127,25 @@
     "login": {"status":"NOT-RUN","account":"No authorized nonpersonal Google test account is available; do not sign in. Home after login redirect and authentication-family removal checks remain NOT-RUN (event_11, removal_06)."},
     "reset": {
       "app_data": "adb -s <leased serial> shell pm clear com.palio.ai",
+      "launch_permission": {
+        "permission": "android.permission.POST_NOTIFICATIONS",
+        "snapshot": "adb -s <leased serial> shell pm check-permission com.palio.ai android.permission.POST_NOTIFICATIONS; adb -s <leased serial> shell pm get-permission-flags com.palio.ai android.permission.POST_NOTIFICATIONS",
+        "grant": "adb -s <leased serial> shell pm grant com.palio.ai android.permission.POST_NOTIFICATIONS",
+        "restore": "Restore the snapshotted grant state and permission flags after each non-permission goal."
+      },
+      "commands": [
+        "adb -s <leased serial> shell pm check-permission com.palio.ai android.permission.POST_NOTIFICATIONS; adb -s <leased serial> shell pm get-permission-flags com.palio.ai android.permission.POST_NOTIFICATIONS",
+        "adb -s <leased serial> shell pm clear com.palio.ai",
+        "adb -s <leased serial> shell pm grant com.palio.ai android.permission.POST_NOTIFICATIONS",
+        "Restore the snapshotted grant state and permission flags after each non-permission goal."
+      ],
       "permissions": [
         "adb -s <leased serial> shell pm revoke com.palio.ai android.permission.POST_NOTIFICATIONS",
         "adb -s <leased serial> shell pm revoke com.palio.ai android.permission.RECORD_AUDIO",
         "adb -s <leased serial> shell pm clear-permission-flags com.palio.ai android.permission.POST_NOTIFICATIONS user-set user-fixed",
         "adb -s <leased serial> shell pm clear-permission-flags com.palio.ai android.permission.RECORD_AUDIO user-set user-fixed"
       ],
-      "scope": "Run only after admission, both reviews and lease. Target the leased serial. Never reset shared device state."
+      "scope": "Run only after admission, both reviews and lease. Target the leased serial. Never reset shared device state. Snapshot and restore permission state on the same serial."
     },
     "fa_debug": {
       "setup": [
@@ -130,7 +156,13 @@
       ],
       "restore": "Before setup, capture getprop debug.firebase.analytics.app, getprop log.tag.FA, and getprop log.tag.FA-SVC. Restore each property to its exact captured value; do not assume .none. Disable the capture process after the observation window."
     },
-    "synchronization": "Visible UI plus timestamped FA/FA-SVC capture. Event assertion requires exact event, allowed parameters, count and ordering in the complete observation window."
+    "synchronization": "Visible UI plus timestamped FA/FA-SVC capture saved as <run evidence dir>/fa-fa-svc-threadtime.log. Checker reads that exact file using the runner log-reader input; retain that input's SHA-256. Event assertion requires exact event, allowed parameters, count and ordering in the complete observation window."
+  },
+  "result_rule": {
+    "observed_requires": "A row is OBSERVED only if the native ledger contains a passed native ledger item naming its assertion_id and reporting the checked count and parameters.",
+    "exit_zero_sets_no_row_status": true,
+    "exit_zero_rule": "Exit 0 alone sets no event or removal row status. Missing or unchecked ledger items remain NOT-RUN with unknown count.",
+    "removed_family_filter": "Count only custom events with origin=app in the FA-SVC log; automatic Firebase events do not count for removal families."
   },
   "evidence_contract": {
     "capture": [
@@ -162,6 +194,10 @@
     "clean_rerun": "Repeat from the clean reset contract; preserve independent result and artifacts.",
     "negative_control": {
       "assertion_id": "negative_control_title",
+      "locale": "en",
+      "screen": "Welcome onboarding screen",
+      "text_source": "onboarding/app_en.arb key welcomeMessage",
+      "actual_value": "Start practicing English with Palios, your AI speaking buddy.",
       "wrong_value": "Palios — WRONG TITLE",
       "expected_exit": 1,
       "proof": "complete native summary has exactly this failed item, the observed title is different, marker ARTEMIS_ASSERTION_EXIT=1 is present, and process exit is 1"
@@ -172,39 +208,39 @@
   "goals": [
     {
       "id": "goal_01",
-      "assertion_ids": ["event_01","event_02","event_03","event_04","event_05","event_06","event_07","event_08","event_09","event_10","event_11","removal_02","removal_04"],
-      "text": "NOT-RUN until the Android leader records an approved clean first-run fixture: event_01 through event_09, removal_02, and removal_04 have unknown counts. With that fixture, observe and assert every listed visible onboarding step in order; enter only the synthetic name Artemis QA; verify the native locale on entry; stop at the login redirect without signing in; capture timestamped FA/FA-SVC logs and visible-state evidence. Assert event_01=splash_scr_view, event_02=obd_1_scr_view, event_03=obd_2_scr_view, event_04=obd_3_scr_view, event_05=lfo_1_scr_view, event_06=lfo_2_scr_view with language=<selected locale tag on entry: en|hi|pt-pt|es-mx|es-es|fr|vi>, event_07=obd_6_scr_view, event_08=obd_7_scr_view, event_09=obd_8_scr_view, event_10=obd_full_8_scr_view as DEFERRED only, event_11=home_scr_view as NOT-RUN without an authorized test login. Assert exactly one event for each visible trigger from event_01 through event_09, with only its row parameters and the observed step order. Assert removal_02=splash_bootstrap_started|splash_bootstrap_completed|splash_bootstrap_failed and removal_04=language_selected|onboarding_started|onboarding_next_tapped|onboarding_completed absent with count 0 in the complete captured onboarding window; otherwise mark NOT-RUN. Missing UI or incomplete capture is not PASS.",
-      "sha256": "cbf80479c72807f7e3f1939980e91b108ddd45af18eebeb2397187283627817a"
+      "assertion_ids": ["event_01","event_02","event_03","event_04","event_05","event_06","event_07","event_08","event_09","removal_02","removal_04"],
+      "text": "Use the pinned clean first-run fixture: reset com.palio.ai, grant POST_NOTIFICATIONS before launch, set locale en, and enter only synthetic name Artemis QA. Stop at the login redirect without signing in. Capture the complete timestamped FA/FA-SVC window and visible states. Assert event_01=splash_scr_view, event_02=obd_1_scr_view, event_03=obd_2_scr_view, event_04=obd_3_scr_view, event_05=lfo_1_scr_view, event_06=lfo_2_scr_view with language=en, event_07=obd_6_scr_view, event_08=obd_7_scr_view, event_09=obd_8_scr_view, exactly once per visible trigger and in observed step order with each row's expected parameters. Assert removal_02=splash_bootstrap_started|splash_bootstrap_completed|splash_bootstrap_failed and removal_04=language_selected|onboarding_started|onboarding_next_tapped|onboarding_completed each have count 0 in the complete captured window. Missing UI or incomplete capture is not PASS.",
+      "sha256": "e868bb4e90e2c0fd5cafa41eff7e4bc3c5ec81587de84da32f5b966c600d14ae"
     },
     {
       "id": "goal_02",
-      "assertion_ids": ["event_12","event_13","event_14","event_15","event_16","removal_05"],
-      "text": "NOT-RUN: --locked-app com.palio.ai does not permit the Android permission-controller foreground package, so do not attempt notification or microphone OS dialogs. Keep event_12=noti_permission_view with source=app_entry|account, event_13=noti_permission_allow, event_14=microphone_permission_view with source=speaking, event_15=microphone_permission_allow, event_16=microphone_permission_denied and removal_05=permission_request_tapped|permission_result|account_notifications_enable_tapped|account_notification_permission_result explicitly NOT-RUN. Record no observed count for these rows. A future admitted run may assert these only after the runner lock policy changes and both reviewers approve that candidate. No focus loss or pending call is proof of a displayed dialog.",
-      "sha256": "585989cb26b119ad9c3d66562c57d609ad037c6b85a6374645f886590479d776"
+      "assertion_ids": [],
+      "text": "DO NOT INVOKE. event_12 through event_16 and removal_05 are NOT-RUN because permission-controller dialog behavior is not verified under the pinned locked-app policy.",
+      "sha256": "7517c604d6c895f04e19ab654e42d121e15e1cd8f8dba4a0bbe2ed62d4b819d2"
     },
     {
       "id": "goal_03",
-      "assertion_ids": ["event_20","event_21","event_22","event_23","event_24","event_25","event_26","event_27","removal_09"],
-      "text": "NOT-RUN until the speaking session and flash-card deck fixtures are pinned by the Android leader. Required assertion items are event_20=feature_speaking_scr_view, event_21=feature_speaking_start, event_22=feature_speaking_finish, event_23=feature_speaking_fail with error_code=microphone_denied|start_failed|connection_failed|invalid_token|timeout|unknown, event_24=feature_flash_card_scr_view, event_25=feature_flash_card_start, event_26=feature_flash_card_success, event_27=feature_flash_card_fail with error_code=load_failed|empty_deck|timeout|unknown, and removal_09=lesson_selected|lesson_start|lesson_end|lesson_complete. In a fixture-backed run, assert one start per accepted attempt, at most one real finish per ready result, one fail per terminal failed attempt, one feature view per session, one flash-card start per attempt, one success per nonempty deck completion, and one fail per terminal deck failure. Preserve native ledger and timestamped logs; no fixture means NOT-RUN, with count unknown and never zero.",
-      "sha256": "e0607cc2b48efbf36892c8fee210a66d57fe8c0e1b1fe4aa90b448d5c47d072a"
+      "assertion_ids": [],
+      "text": "DO NOT INVOKE. event_20 through event_27 and removal_09 are NOT-RUN because no deterministic speaking-session or flash-card deck fixture is pinned.",
+      "sha256": "f660fb0a60d2a3b914a8e8178bfa7544cf97ad67f82a369216cb7218ec0287ac"
     },
     {
       "id": "goal_04",
-      "assertion_ids": ["event_17","event_18","event_19","event_28","event_29","event_30","event_31","event_32","removal_10","removal_11"],
-      "text": "NOT-RUN until verified ad callbacks, real store offers and authorized sandbox fixtures exist. Required assertion items are event_17=inter_splash_scr_view, event_18=inter_home_scr_view, event_19=app_open_scr_view with placement=open_resume, event_28=paywall_scr_view with source=home|speaking|direct and paywall_id=premium_weekly_trial, event_29=paywall_scr_view with source=home|speaking|direct and paywall_id=premium_yearly_exit, event_30=paywall_btn_click with button=purchase|restore|terms_of_use|privacy_policy|close, product_id=<real weekly product ID or none>, source=home|speaking|direct, event_31=paywall_btn_click with button=purchase|close, product_id=<real yearly product ID for purchase or none>, source=home|speaking|direct, event_32=in_app_purchase with automatic schema only, removal_10=interstitial_show|interstitial_failed, and removal_11=premium_purchase_attempt|premium_purchase_success|premium_purchase_cancelled|premium_purchase_failed|premium_restore_attempt|premium_restore_success|premium_restore_failed. If later fixture-backed, assert exactly one event per accepted impression or click trigger and inspect actual transitive SDK emissions. No fixture means NOT-RUN and count unknown. Never fabricate impressions or purchases, disable automatic collection, or spend money.",
-      "sha256": "6dae3ee6e9ebfef524a9d9d71b9c5ba8051836c646a3757c227c5b9943303114"
+      "assertion_ids": [],
+      "text": "DO NOT INVOKE. event_17 through event_19, event_28 through event_32, removal_10 and removal_11 are NOT-RUN because verified ad callbacks, real store offers, and authorized sandbox fixtures are not pinned. Never fabricate impressions or purchases or disable automatic collection.",
+      "sha256": "df416f3e4c2a4d4c1030397b155cebd05bd351cd1fc8df5a4fed6ac0f12eb1d1"
     },
     {
       "id": "goal_05",
-      "assertion_ids": ["removal_01","removal_02","removal_03","removal_04","removal_05","removal_06","removal_07","removal_08","removal_09","removal_10","removal_11","removal_12"],
-      "text": "For each complete actual SDK emission window, assert zero occurrences for each exact removed family: removal_01=app_open|app_foreground|app_background; removal_02=splash_bootstrap_started|splash_bootstrap_completed|splash_bootstrap_failed; removal_03=navigation_route_changed|screen_view; removal_04=language_selected|onboarding_started|onboarding_next_tapped|onboarding_completed; removal_05=permission_request_tapped|permission_result|account_notifications_enable_tapped|account_notification_permission_result; removal_06=login_google_start|login_google_success|login_google_cancelled|login_google_failed|login_backend_failed|login_google_error|logout_tapped|logout_success; removal_07=home_tab_selected|practice_tab_selected|redeem_tab_selected|rank_tab_selected|account_tab_selected; removal_08=account_language_opened|account_language_changed|account_rate_app_tapped|account_contact_us_tapped|account_share_app_tapped; removal_09=lesson_selected|lesson_start|lesson_end|lesson_complete; removal_10=interstitial_show|interstitial_failed; removal_11=premium_purchase_attempt|premium_purchase_success|premium_purchase_cancelled|premium_purchase_failed|premium_restore_attempt|premium_restore_success|premium_restore_failed; removal_12=api_call_failed|api_call_timeout. Mark a family NOT-RUN when its flow fixture or complete SDK capture is unavailable; missing logs are not zero. Preserve automatic Firebase collection. If the device class is unqualified, use the qualification negative control assertion_id=negative_control_title with wrong value `Palios — WRONG TITLE`; require one failed native item, ARTEMIS_ASSERTION_EXIT=1 and process exit 1. Retain artifacts and obtain leader cleanup/release verification.",
-      "sha256": "ec179c68e5b7de21cbe1a9af9e8850f89e5d0fa41d5f46985ab3f04b4addf4a1"
+      "assertion_ids": ["removal_01","removal_02","removal_03","removal_04","removal_07","removal_08","removal_12"],
+      "text": "For the complete FA/FA-SVC window, assert zero occurrences for removal_01=app_open|app_foreground|app_background, removal_02=splash_bootstrap_started|splash_bootstrap_completed|splash_bootstrap_failed, removal_03=navigation_route_changed|screen_view, removal_04=language_selected|onboarding_started|onboarding_next_tapped|onboarding_completed, removal_07=home_tab_selected|practice_tab_selected|redeem_tab_selected|rank_tab_selected|account_tab_selected, removal_08=account_language_opened|account_language_changed|account_rate_app_tapped|account_contact_us_tapped|account_share_app_tapped, and removal_12=api_call_failed|api_call_timeout. Count only custom events with origin=app in the FA-SVC log; automatic Firebase events do not count. The Checker reads the exact saved FA/FA-SVC window from <run evidence dir>/fa-fa-svc-threadtime.log using the runner log-reader input. Preserve automatic Firebase collection. Missing fixture or incomplete capture is NOT-RUN, never zero.",
+      "sha256": "dc76123b93987d9927a679ca03ec61b9a7fb5896375876b0008954269a78ab10"
     },
     {
       "id": "goal_06_negative_control",
       "assertion_ids": ["negative_control_title"],
-      "text": "Run the approved clean onboarding fixture as a separate qualification attempt. Assert assertion_id=negative_control_title: the visible Palios app title is exactly `Palios — WRONG TITLE`. The native summary must contain exactly one failed item for this assertion, the observed title must differ from the wrong value, stdout must contain ARTEMIS_ASSERTION_EXIT=1, and the process exit must equal 1. Keep this expected failure separate from positive runs; exit 0, exit 2, a missing marker, incomplete evidence or another failed item invalidates the control.",
-      "sha256": "f01f75a357c0182ef06c860dc093dba5fad7819bbf99c96b436b4cc8824ccbac"
+      "text": "Run the pinned clean onboarding fixture as a separate qualification attempt with locale en. On the Welcome onboarding screen, assert assertion_id=negative_control_title: visible text from onboarding/app_en.arb key welcomeMessage is exactly `Palios — WRONG TITLE`; the real value is `Start practicing English with Palios, your AI speaking buddy.` The native summary must contain exactly one failed item for this assertion, stdout must contain ARTEMIS_ASSERTION_EXIT=1, and process exit must equal 1. Keep this expected failure separate from positive runs; exit 0, exit 2, a missing marker, incomplete evidence or another failed item invalidates the control.",
+      "sha256": "a65b64470754fa50d8ca86a93d3a843c4c56f91a48ba3734b710c7ea507ae578"
     }
   ],
   "coverage": {
