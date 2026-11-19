@@ -76,6 +76,10 @@ def _available(conn, device_id, aliases, lock_dir, *, own_path=None):
             raise ValueError("device reserved by broker")
     if conn.execute("SELECT 1 FROM android_claims WHERE device_id=?", (device_id,)).fetchone():
         raise ValueError("device claimed by Android")
+    check_lock_conflicts(device_id, aliases, lock_dir, own_path=own_path)
+
+
+def check_lock_conflicts(device_id, aliases, lock_dir, *, own_path=None):
     directory = Path(lock_dir)
     if not directory.is_dir():
         raise ValueError("SDK lock census unavailable")
@@ -101,6 +105,57 @@ def check_sdk_available(db_path, guard_path, alias, lock_dir, own_path):
         if alias not in aliases:
             raise UnknownSdkClaimIdentity("unknown claim identity")
         _available(conn, aliases[alias], aliases, lock_dir, own_path=own_path)
+
+
+def check_sdk_handoff(db_path, guard_path, lease_id, device_id, endpoint, lock_path, token, pid):
+    """Read back a committed broker-owned execution lock under the shared guard."""
+    with sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True) as conn:
+        row = conn.execute(
+            "SELECT w.lock_path,w.owner,s.guard_path,s.lock_dir FROM broker_avd_work w "
+            "JOIN broker_groups g USING(lease_id) JOIN broker_access a USING(lease_id) "
+            "JOIN broker_devices d USING(lease_id) JOIN android_claim_source s ON s.singleton=1 "
+            "WHERE w.lease_id=? AND d.device_id=? AND d.endpoint=? "
+            "AND g.state='active' AND a.phase='work'",
+            (lease_id, device_id, endpoint),
+        ).fetchone()
+    if (
+        row is None
+        or Path(row[0]) != lock_path.resolve()
+        or Path(row[2]) != Path(guard_path).resolve()
+        or Path(row[3]) != lock_path.parent.resolve()
+    ):
+        raise ValueError("broker execution lock not committed")
+    owner = json.loads(row[1])
+    if (owner["token"], owner["pid"]) != (token, pid) or json.loads(lock_path.read_text()) != owner:
+        raise ValueError("broker execution lock owner mismatch")
+
+
+def authorized_handoff(conn, guard_path, device_id, proof, now):
+    """Check owner consent against the exact live claim and fresh census."""
+    consent = proof["claim_handoff"]
+    source, aliases = _source(conn, guard_path, clock=lambda: now)
+    if (
+        _canonical(aliases, device_id) != device_id
+        or source[0] != consent["census_generation"]
+        or (consent["owner"], consent["run_id"]) != (proof["principal"], proof["run_id"])
+    ):
+        raise ValueError("claim handoff scope mismatch")
+    row = conn.execute(
+        "SELECT * FROM android_claims WHERE claim_id=? AND device_id=? AND owner=? AND run_id=?",
+        (consent["claim_id"], device_id, consent["owner"], consent["run_id"]),
+    ).fetchone()
+    if row is None:
+        raise ValueError("claim not yours or already transferred")
+    return dict(row)
+
+
+def transfer_claim(conn, claim, consent, lease_id, now):
+    """Run only in the transaction that creates the occupying broker lease."""
+    conn.execute(
+        "INSERT INTO android_claim_handoffs VALUES (?,?,?,?,?)",
+        (claim["claim_id"], lease_id, json.dumps(claim), json.dumps(consent), now),
+    )
+    conn.execute("DELETE FROM android_claims WHERE claim_id=?", (claim["claim_id"],))
 
 
 class ClaimLedger:
@@ -148,6 +203,11 @@ class ClaimLedger:
                 "CREATE TABLE IF NOT EXISTS android_claims ("
                 "claim_id TEXT PRIMARY KEY, device_id TEXT NOT NULL UNIQUE, "
                 "owner TEXT NOT NULL, run_id TEXT NOT NULL, reference TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS android_claim_handoffs (claim_id TEXT PRIMARY KEY, "
+                "lease_id TEXT NOT NULL UNIQUE, claim TEXT NOT NULL, consent TEXT NOT NULL, "
+                "transferred_at REAL NOT NULL)"
             )
 
     def _read_source(self, conn):

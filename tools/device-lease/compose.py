@@ -192,7 +192,7 @@ def startup_reader(path, max_age, registry, leader_id, clock=time.time):
     def read():
         _owner_file(path)
         row = json.loads(Path(path).read_text(encoding="utf-8"))
-        if not isinstance(row, dict) or set(row) != {
+        if not isinstance(row, dict) or set(row) - {"claim_handoff"} != {
             "generation",
             "device",
             "principal",
@@ -210,6 +210,19 @@ def startup_reader(path, max_age, registry, leader_id, clock=time.time):
             for k in ("principal", "agent_id", "issue_id", "run_id")
         ):
             raise ValueError("invalid startup owner")
+        if "claim_handoff" in row:
+            consent = row["claim_handoff"]
+            if (
+                not isinstance(consent, dict)
+                or set(consent) != {"claim_id", "owner", "run_id", "census_generation", "reference"}
+                or type(consent["census_generation"]) is not int
+                or consent["census_generation"] < 1
+                or any(
+                    not isinstance(consent[key], str) or not consent[key].strip()
+                    for key in ("claim_id", "owner", "run_id", "reference")
+                )
+            ):
+                raise ValueError("invalid claim handoff")
         device = registry.resolve(row["device"].get("device_id"))
         if (
             device is None
@@ -293,7 +306,7 @@ def avd_grant_reader(path, registry, max_age, clock=time.time):
         for row in rows:
             if (
                 not isinstance(row, dict)
-                or set(row)
+                or set(row) - {"testcase", "qualification"}
                 != {
                     "phase",
                     "device_id",
@@ -327,6 +340,7 @@ def avd_grant_reader(path, registry, max_age, clock=time.time):
                     for key in ("observed_at", "expires_at")
                 )
                 or row["observed_at"] >= row["expires_at"]
+                or (phase == "identity" and set(row) & {"testcase", "qualification"})
             ):
                 raise ValueError("invalid AVD grant scope")
             seen.add(phase)
