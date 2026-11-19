@@ -144,6 +144,10 @@ def active_faults(broker, conn, observations):
                 journal = _journal(json.loads(row["journal"]))
                 identity = json.loads(row["identity"]) if row["identity"] is not None else None
                 broker.startup_io.check_binding(device, journal, identity, work=phase == "work")
+                if phase == "work":
+                    from work_handoff import check_active
+
+                    check_active(broker, conn, lease_id, now)
         except Exception:
             faults[lease_id] = "launch_binding_unconfirmed"
     return faults

@@ -14,13 +14,14 @@ import socket
 import socketserver
 import sqlite3
 import stat
+import struct
 import subprocess
 import sys
 import threading
 
 from broker import Broker, DeviceRegistry, Refused, process_identity
+from device_lease.transport import MAX_FRAME, rpc
 
-MAX_FRAME = 65536
 DEFAULT_STATE = Path.home() / ".local/state/artemis-device-lease"
 
 
@@ -31,7 +32,21 @@ class Handler(socketserver.StreamRequestHandler):
             data = self.rfile.readline(MAX_FRAME + 1)
             if len(data) > MAX_FRAME or not data.endswith(b"\n"):
                 raise Refused("invalid_request")
-            response = self.server.dispatch(json.loads(data))
+            request = json.loads(data)
+            if (
+                isinstance(request, dict)
+                and request.get("op") == "execution-lock"
+                and isinstance(self.server, BrokerServer)
+            ):
+                credentials = self.request.getsockopt(
+                    socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+                )
+                pid, uid, _ = struct.unpack("3i", credentials)
+                if uid != os.geteuid():
+                    raise Refused("run_not_live")
+                response = self.server.dispatch(request, peer_pid=pid)
+            else:
+                response = self.server.dispatch(request)
         except Refused as exc:
             response = {"code": exc.code, **exc.details}
         except (ValueError, UnicodeError, TimeoutError):
@@ -88,7 +103,7 @@ class BrokerServer(socketserver.UnixStreamServer):
             self.server_close()
             raise
 
-    def dispatch(self, request):
+    def dispatch(self, request, *, peer_pid=None):
         if not isinstance(request, dict) or set(request) != {"op", "args"}:
             raise Refused("invalid_request")
         methods = {
@@ -103,6 +118,16 @@ class BrokerServer(socketserver.UnixStreamServer):
             "claim": self.broker.claim,
             "inventory": self.broker.inventory,
         }
+        if request["op"] == "execution-lock" and peer_pid is not None:
+            from work_handoff import acquire
+
+            if not isinstance(request["args"], dict):
+                raise Refused("invalid_request")
+            try:
+                inspect.signature(acquire).bind(self.broker, peer_pid, **request["args"])
+            except TypeError as exc:
+                raise Refused("invalid_request") from exc
+            return acquire(self.broker, peer_pid, **request["args"])
         if not isinstance(request["op"], str) or request["op"] not in methods:
             raise Refused("invalid_request")
         method = methods[request["op"]]
@@ -203,21 +228,6 @@ class ControlServer(socketserver.UnixStreamServer):
         if self._owns_socket:
             self.socket_path.unlink(missing_ok=True)
             self._owns_socket = False
-
-
-def rpc(socket_path, request):
-    """Clients touch only the socket, never the database."""
-    encoded = json.dumps(request).encode() + b"\n"
-    if len(encoded) > MAX_FRAME:
-        raise ValueError("request is too large")
-    with socket.socket(socket.AF_UNIX) as client:
-        client.settimeout(15)
-        client.connect(str(socket_path))
-        client.sendall(encoded)
-        response = client.makefile("rb").readline(MAX_FRAME + 1)
-    if len(response) > MAX_FRAME or not response.endswith(b"\n"):
-        raise ValueError("invalid broker response")
-    return json.loads(response)
 
 
 def main(argv=None):

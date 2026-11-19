@@ -106,6 +106,7 @@ TOutput = TypeVar("TOutput", bound=BaseModel | None)
 
 
 class AgentBase:
+    _lease_execution_lock: DeviceExecutionLock | None = None
     _config: AgentConfig
     _tasks: list[Task] = []
     _tmp_traces_dir: Path
@@ -143,6 +144,8 @@ class AgentBase:
         retry_count: int = 5,
         retry_wait_seconds: int = 5,
     ):
+        if DeviceExecutionLock.LEASE_HANDOFF_ENV in os.environ:
+            raise AgentError("Managed AVD handoff requires the Artemis SDK agent.")
 
         if os.environ.get("ARTEMIS_CLOUD_MODE") != "1" and not which("adb"):
             raise ExecutableNotFoundError("adb")
@@ -509,6 +512,14 @@ class AgentBase:
                 or getattr(getattr(task, "request", None), "task_name", None)
             )
             active_owner = DeviceExecutionLock.get_active_owner(self._device_context.device_id)
+            managed_lock = self._lease_execution_lock
+            if managed_lock is not None:
+                if not await asyncio.to_thread(managed_lock.validate_handoff):
+                    raise AgentError("Managed AVD execution lock is no longer admitted.")
+            elif DeviceExecutionLock.LEASE_HANDOFF_ENV in os.environ:
+                raise AgentError(
+                    "Managed AVD execution lock was not acquired during initialization."
+                )
             already_held = (
                 active_owner is not None
                 and active_owner.pid == os.getpid()
@@ -523,7 +534,7 @@ class AgentBase:
             )
             device_lock = (
                 None
-                if already_held
+                if already_held or managed_lock is not None
                 else DeviceExecutionLock(
                     self._device_context.device_id,
                     description=goal_metadata(request.goal),
