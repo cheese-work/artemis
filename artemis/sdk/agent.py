@@ -227,18 +227,28 @@ class Agent(AgentBase):
             session_id=self._session_id,
         )
         acquiring = asyncio.create_task(asyncio.to_thread(lock.acquire, blocking=False))
+
+        def release_abandoned(acquisition: asyncio.Task[None]) -> None:
+            lock.release()
+            error = None if acquisition.cancelled() else acquisition.exception()
+            if error is not None:
+                logger.warning(f"Abandoned AVD lock acquisition failed: {type(error).__name__}")
+
+        initialized = False
         try:
             await asyncio.shield(acquiring)
             self._lease_execution_lock = lock
-            return await self._init_device(api_key)
-        except BaseException:
-            try:
-                await acquiring
-            except Exception:
-                pass
-            lock.release()
-            self._lease_execution_lock = None
-            raise
+            initialized = await self._init_device(api_key)
+            return initialized
+        finally:
+            if not initialized:
+                if self._lease_execution_lock is lock:
+                    self._lease_execution_lock = None
+                if acquiring.done():
+                    lock.release()
+                else:
+                    acquiring.add_done_callback(release_abandoned)
+                    await asyncio.wait({acquiring})
 
     async def _init_device(self, api_key: str | None):
         if os.environ.get("ARTEMIS_CLOUD_MODE") != "1" and not EndpointTransport.adb_binary():

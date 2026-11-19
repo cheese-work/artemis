@@ -11,7 +11,7 @@ import sqlite3
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_device_lease_startup as fixtures
@@ -328,6 +328,68 @@ class LaunchTests(unittest.TestCase):
             probe.assert_awaited_once()
             self.assertEqual(self.broker.status(**self.owner())["access_phase"], "work")
             agent._lease_execution_lock.release()
+
+    def test_cancelled_sdk_init_releases_lock_after_pending_acquisition(self):
+        from artemis.sdk.agent import Agent, DevicePlatform
+
+        agent = Agent.__new__(Agent)
+        agent._initialized = False
+        agent._session_id = "fixture"
+        agent._config = SimpleNamespace(
+            device_id="emulator-5554",
+            device_platform=DevicePlatform.ANDROID,
+            servers=SimpleNamespace(adb_host="127.0.0.1", adb_port=5037),
+            concurrency_mode="per_device",
+            max_concurrency=None,
+        )
+        lock = Mock()
+        probe = AsyncMock()
+
+        async def exercise():
+            started, finish, released = asyncio.Event(), asyncio.Event(), asyncio.Event()
+            lock.release.side_effect = released.set
+            worker = None
+
+            async def acquire_in_thread(acquire, **kwargs):
+                nonlocal worker
+                worker = asyncio.current_task()
+                started.set()
+                await finish.wait()
+                acquire(**kwargs)
+
+            with patch("artemis.sdk.agent.asyncio.to_thread", side_effect=acquire_in_thread):
+                initializing = asyncio.create_task(agent._init_internal())
+                await started.wait()
+                initializing.cancel()
+                await asyncio.sleep(0)
+                initializing.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await initializing
+                lock.release.assert_not_called()
+                self.assertFalse(worker.cancelled(), "cancellation reached the pending acquisition")
+                finish.set()
+                await asyncio.wait_for(released.wait(), timeout=2)
+                lock.release.assert_called_once_with()
+                probe.assert_not_awaited()
+                self.assertIsNone(agent._lease_execution_lock)
+
+        with (
+            patch.dict(os.environ, {"ARTEMIS_DEVICE_LEASE_HANDOFF": "fixture"}),
+            patch("artemis.sdk.agent.DeviceExecutionLock", return_value=lock),
+            patch.object(agent, "_init_device", probe),
+        ):
+            asyncio.run(exercise())
+
+    def test_failed_sdk_readback_refuses_access_and_allows_an_exact_retry(self):
+        self.sdk_handoff("work")
+        self.grants["work"] = self.reviewed_grant("work")
+        with patch("device_lease.claims.check_sdk_handoff", side_effect=OSError("readback failed")):
+            self.assertFalse(self.lock_attempt())
+        self.assertFalse(self.lock._acquired)
+        installed = self.lock.path.read_bytes()
+        self.assertTrue(self.lock_attempt())
+        self.assertEqual(self.lock.path.read_bytes(), installed)
+        self.lock.release()
 
     def test_work_handoff_fails_closed_on_lock_failure_then_fences_on_restart(self):
         self.sdk_handoff("work")
