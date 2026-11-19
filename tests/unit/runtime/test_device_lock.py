@@ -495,3 +495,47 @@ def test_held_admission_guard_respects_acquire_timeout(tmp_path, monkeypatch):
             future.result(timeout=1)
     assert not lock.path.exists()
     assert not list(lock.queue_dir.glob("*.wait"))
+
+
+def test_handoff_readback_guard_respects_acquire_timeout(tmp_path, monkeypatch):
+    import fcntl
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import Mock
+
+    guard = tmp_path / "claims.guard"
+    database = tmp_path / "leases.sqlite3"
+    database.touch()
+    for name, value in {
+        "ARTEMIS_DEVICE_ADMISSION_GUARD": str(guard),
+        "ARTEMIS_DEVICE_CLAIMS_DB": str(database),
+        "MULTICA_AGENT_ID": "fixture-agent",
+        "MULTICA_TASK_ID": "fixture-run",
+        "MULTICA_RUN_BINDING_ID": "fixture-binding",
+        "ARTEMIS_DEVICE_LEASE_HANDOFF": json.dumps(
+            {
+                "socket": str(tmp_path / "broker.sock"),
+                "lease_id": "fixture-lease",
+                "device_id": "fixture-device",
+                "issue_id": "fixture-issue",
+                "generation": 1,
+                "phase": "work",
+            }
+        ),
+    }.items():
+        monkeypatch.setenv(name, value)
+    broker_rpc = Mock(return_value={"acquired": True})
+    readback = Mock()
+    monkeypatch.setattr("device_lease.transport.rpc", broker_rpc)
+    monkeypatch.setattr("device_lease.claims.check_sdk_handoff", readback)
+
+    lock = DeviceExecutionLock("emulator-5554")
+    with ThreadPoolExecutor() as workers, guard.open("wb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        future = workers.submit(lock.acquire, timeout=0.05, poll_interval=0.01)
+        with pytest.raises(DeviceBusyError, match="Timed out waiting for the Artemis device queue"):
+            future.result(timeout=1)
+
+    assert broker_rpc.called
+    readback.assert_not_called()
+    assert not lock.path.exists()
+    assert not list(lock.queue_dir.glob("*.wait"))

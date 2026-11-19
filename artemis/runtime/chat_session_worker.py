@@ -200,7 +200,9 @@ async def run_chat_session(store, identity, lease, execute, *, idle_seconds=300,
     try:
         acquisition = asyncio.create_task(
             asyncio.to_thread(
-                lease.acquire, timeout=DEVICE_ADMISSION_TIMEOUT_SECONDS, cancel_event=cancel_event
+                lease.acquire,
+                admission_timeout=DEVICE_ADMISSION_TIMEOUT_SECONDS,
+                cancel_event=cancel_event,
             )
         )
         try:
