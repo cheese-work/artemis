@@ -16,6 +16,8 @@ from broker import DeviceRegistry, Refused
 from daemon import BrokerServer, ControlServer
 from owned_recovery import OwnedRecovery
 import startup
+import refresh
+import compose
 from authority import Authority
 
 
@@ -95,6 +97,9 @@ class LaunchTests(unittest.TestCase):
         fixtures.StartupTests.setUp(self)
         self.io = FakeLifecycle(self)
         self.broker.startup_io = self.io
+        self.broker.avd_grants = lambda: (
+            {"identity": self.phase_grant("identity")} if hasattr(self, "group") else {}
+        )
 
     def launch(self, group=None):
         group = group or self.group
@@ -114,6 +119,61 @@ class LaunchTests(unittest.TestCase):
 
     def owner(self):
         return dict(lease_id=self.group["lease_id"], principal="agent", run_id="run-1")
+
+    def test_identity_probe_requires_its_own_grant(self):
+        self.group = self.start()
+        self.launch()
+        self.broker.avd_grants = lambda: {"work": self.phase_grant("work")}
+        self.refused("avd_phase_not_admitted", self.verify)
+        self.assertNotIn("observe", self.io.calls)
+
+    def phase_grant(self, phase):
+        return dict(
+            phase=phase,
+            device_id=self.device.device_id,
+            endpoint=self.device.aliases[0],
+            lease_id=self.group["lease_id"],
+            generation=1,
+            reference=f"fixture-{phase}",
+            observed_at=self.now,
+            expires_at=self.now + 200,
+        )
+
+    def test_avd_refresh_requires_actual_fresh_identity_and_matching_phase(self):
+        self.group = self.start()
+        self.launch()
+        phases = {phase: self.phase_grant(phase) for phase in ("identity", "qualification")}
+        ready = refresh.avd_readiness
+        serial = self.device.aliases[0]
+        grant_file = self.source.with_name("avd-phases.json")
+        grant_file.write_text(json.dumps(list(phases.values())))
+        grant_file.chmod(0o600)
+        self.broker.avd_grants = compose.avd_grant_reader(
+            grant_file,
+            self.registry,
+            60,
+            clock=lambda: self.now,
+        )
+        self.assertEqual(ready(self.broker, {serial: "device"}, 60), [])
+        self.verify()
+        expected = [dict(device_id=self.device.device_id, endpoint=serial, phase="qualification")]
+        self.assertEqual(ready(self.broker, {serial: "device"}, 60), expected)
+        self.assertEqual(ready(self.broker, {serial: "offline"}, 60), [])
+        self.assertEqual(ready(self.broker, {self.device.aliases[1]: "device"}, 60), [])
+        phases["qualification"]["endpoint"] = self.device.aliases[1]
+        grant_file.write_text(json.dumps(list(phases.values())))
+        self.assertEqual(ready(self.broker, {serial: "device"}, 60), [])
+        phases["qualification"]["endpoint"] = serial
+        phases["qualification"]["lease_id"] = "other-lease"
+        grant_file.write_text(json.dumps(list(phases.values())))
+        self.assertEqual(ready(self.broker, {serial: "device"}, 60), [])
+        phases["qualification"]["lease_id"] = self.group["lease_id"]
+        self.now += 31
+        for grant in phases.values():
+            grant["observed_at"] = self.now
+        grant_file.write_text(json.dumps(list(phases.values())))
+        self.assertEqual(ready(self.broker, {serial: "device"}, 60), expected)
+        self.assertEqual(ready(self.broker, {serial: "device"}, 30), [])
 
     def recover_after_restart(self, live):
         old = self.broker
@@ -272,6 +332,7 @@ class LaunchTests(unittest.TestCase):
                     self.group = self.start()
                     self.launch()
                     if phase == "work":
+                        self.broker.avd_grants = lambda: {"identity": self.phase_grant("identity")}
                         self.verify()
                         with sqlite3.connect(self.path) as conn:
                             conn.execute("UPDATE broker_access SET phase='work'")

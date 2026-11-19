@@ -124,6 +124,7 @@ class Broker:
         admission_snapshot=None,
         startup_snapshot=None,
         startup_io=None,
+        avd_grants=dict,
         authority_name="broker",
         authority_generation=1,
         leader_id="5cd75ce5-d323-4004-9779-7e2ccf16bde4",
@@ -155,6 +156,7 @@ class Broker:
         self.admission_snapshot = admission_snapshot
         self.startup_snapshot = startup_snapshot
         self.startup_io = startup_io
+        self.avd_grants = avd_grants
         if recovery_io is not None:
             self._text(recovery_owner, ops_issue)
 
@@ -496,8 +498,7 @@ class Broker:
         conn = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
         conn.row_factory = sqlite3.Row
         try:
-            for statement in _DDL:
-                conn.execute(statement)
+            self._ensure_schema(conn)
             self._admission.audit_ok = True
             try:
                 audit.flush(self.db_path)
@@ -538,11 +539,16 @@ class Broker:
                 blocked = set(self.admitted)
             self._admission.blocked = blocked
             self._admission.startup = None
+            self._admission.avd_grants = {}
             if self.startup_snapshot is not None:
                 try:
                     self._admission.startup = self.startup_snapshot()
                 except Exception:
                     pass  # Startup closes independently of physical-device readiness.
+                try:
+                    self._admission.avd_grants = self.avd_grants()
+                except (OSError, ValueError):
+                    pass
             # Process and boot-id reads happen before BEGIN IMMEDIATE, never under its lock.
             observations = {}
             for row in conn.execute(
@@ -594,6 +600,15 @@ class Broker:
             {r["lease_id"]: dict(r) for r in conn.execute("SELECT * FROM broker_groups")},
             {r["ticket_id"]: dict(r) for r in conn.execute("SELECT * FROM broker_tickets")},
         )
+
+    @staticmethod
+    def _ensure_schema(conn):
+        for statement in _DDL:
+            conn.execute(statement)
+
+    def ensure_schema(self):
+        with self.admission_guard(), sqlite3.connect(self.db_path) as conn:
+            self._ensure_schema(conn)
 
     def _event(self, conn, event, now, group, **details):
         context = conn.execute(

@@ -965,7 +965,7 @@ that are not group/world writable. Run `device-lease OP --help` for exact flags.
 | Operation | Additional flags | Result |
 | --- | --- | --- |
 | `write-readiness` | `--input OBSERVATIONS.json` | Validate and atomically publish per-device grants and observations |
-| `census-android-claims` | `--input CENSUS.json` | Attest a complete writer census and generation |
+| `census-android-claims` | `--input CENSUS.json [--validate-reload]` | Attest a complete writer census, or preview a replacement without publishing |
 | `claim-android` | `--device-id ALIAS --owner OWNER --run-id RUN --reference AUDIT_REF` | Return owned claim ID, or refuse occupancy |
 | `release-android` | `--claim-id ID --owner OWNER --run-id RUN` | Remove only that owned claim |
 | `list-android-claims` | none | Read source metadata and all authoritative claim rows, including stale state |
@@ -1032,6 +1032,70 @@ census is mandatory. A failed observation invalidates the census immediately.
 Stopping the timer closes admission when source freshness expires. Run every
 20 seconds with a 60-second readiness age; serialize refreshes with the same
 flock. No lock or lease is held between timer invocations.
+
+### AVD phase grants and reload preview (CHE-6328)
+
+The physical `host-config` fields, fixed expiry and output rows do not change.
+Do not put an AVD in `devices` or in the ordinary `write-readiness` input. The
+startup snapshot remains the startup grant, scoped to the pinned AVD and live
+executor run, with independent prior release. It does not authorize guest probes.
+
+To prepare separate phase grants, set the optional composition field
+`"avd_grants": {"path": "/path/to/avd-grants.json", "max_age_seconds": 60}`.
+It requires startup composition and the registered AVD. Its owner-only JSON
+array contains at most one row per `identity`, `qualification` or `work` phase:
+
+```json
+[
+  {
+    "phase": "identity",
+    "device_id": "CANONICAL_AVD_ID",
+    "endpoint": "emulator-5584",
+    "lease_id": "COMMITTED_STARTUP_LEASE_ID",
+    "generation": 1,
+    "reference": "AUTHORITY_EVIDENCE_REFERENCE",
+    "observed_at": 1794646740,
+    "expires_at": 1794646800
+  }
+]
+```
+
+The endpoint in the example is a fixture, not an approved target. The grant's
+generation is the broker authority generation from the startup proof, not the
+writer census generation. The lease binds the grant to the same executor run;
+references alone are not credentials. Expiry is fixed by the source. An absent,
+invalid or expired identity grant refuses `verify-startup` before guest probes.
+Refresh uses the actual ADB `device` row for the exact serial, fresh identity from
+the broker launch journal, current process binding and the matching qualification
+or work grant. It reports these separately as `avd_readiness` in owner readback.
+No row in that output grants a lease, enables ordinary allocation, or completes
+the qualification or work handoff. An idle or unverified AVD has no such row.
+
+**Checklist for a separately admitted activation (not executed here):**
+
+1. Confirm reviewed default-branch SHA, independently verified prior release,
+   Android-authority admission, and the verified name, data path, process and
+   fixed endpoint pins. Pin the X99-built artifact by that SHA and its verified
+   digest; record the previous running SHA and rollback digest.
+2. Stage the owner-only registry and composition files. Confirm the physical
+   grants, claim/SDK guards, shared ADB and managed run binding remain unchanged.
+   Attest a fresh census covering both writers, with a strictly higher
+   generation and every live claim unchanged under its canonical ID.
+3. Drain and reconcile non-released groups and outstanding offers before any
+   lifecycle configuration change. A quarantined group is still occupied;
+   never delete it or use expiry to bypass reconciliation. Without a lifecycle
+   change, a new census preserves quarantine in the same database.
+4. With the same guard, state database and lock directory, validate the staged
+   inputs with `census-android-claims --validate-reload --composition FILE
+   --registry FILE --state-dir DIR --input CENSUS.json`. This read-only preview
+   does not publish the census, change broker state or reserve the drain.
+5. Only under the separate admission, keep admission closed, recheck the drain,
+   then apply the validated inputs and restart using the reviewed artifact.
+   Registry and composition are loaded at `serve` startup, not on JSON edits.
+   Read back the running process's artifact SHA and digest, the loaded census
+   generation, claims, canonical aliases, group states, and shared ADB listener.
+   If readback differs, keep admission closed and use the separately approved
+   rollback procedure. Do not start or restart ADB.
 
 The private leader socket remains the release boundary. `leader_id` is an
 explicit cooperative role check, not a credential. The in-process Broker's

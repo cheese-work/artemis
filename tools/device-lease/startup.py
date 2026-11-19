@@ -231,46 +231,66 @@ def launch(broker, *, lease_id, principal, run_id):
         return dict(lease_id=lease_id, state="executing", journal=journal)
 
 
+def phase_grant_matches(grant, phase, lease_id, device, proof, now):
+    return (
+        grant is not None
+        and all(
+            grant[key] == value
+            for key, value in (
+                ("phase", phase),
+                ("lease_id", lease_id),
+                ("device_id", device.device_id),
+                ("endpoint", f"emulator-{device.console_port}"),
+                ("generation", proof["generation"]),
+            )
+        )
+        and now < grant["expires_at"]
+    )
+
+
+def verified_identity(device, journal, identity):
+    expected = dict(
+        **journal,
+        parent_pid=journal["worker"]["pid"],
+        avd_name=device.avd_name,
+        data_path=device.avd_data_path,
+        userdata=device.avd_data_path + "/userdata-qemu.img",
+        console_port=device.console_port,
+        adb_port=device.adb_port,
+        serial=f"emulator-{device.console_port}",
+        api=device.api,
+        abi=device.abi,
+        socket_pids=[journal["child"]["pid"]],
+        userdata_pids=[journal["child"]["pid"]],
+    )
+    readiness = {"device_state", "boot_complete"}
+    if {key: value for key, value in identity.items() if key not in readiness} != expected:
+        raise StartupMismatch("process/guest binding mismatch")
+    if identity.get("device_state") != "device" or identity.get("boot_complete") != "1":
+        raise StartupNotReady("guest boot not complete")
+
+
 def verify(broker, *, lease_id, principal, run_id):
     if broker.startup_io is None:
         raise Refused("startup_launch_unavailable")
     broker._text(lease_id, principal, run_id)
     with broker.admission_guard():
         with broker.transaction() as (conn, now):
-            _, device = _group(broker, conn, now, lease_id, principal, run_id)
+            group, device = _group(broker, conn, now, lease_id, principal, run_id)
             row = conn.execute(
                 "SELECT * FROM broker_launches WHERE lease_id=?", (lease_id,)
             ).fetchone()
             if row is None or row["state"] != "executing":
                 raise Refused("startup_not_launched")
             journal = _journal(json.loads(row["journal"]))
+            grant = broker._admission.avd_grants.get("identity")
+            if not phase_grant_matches(grant, "identity", lease_id, device, group["startup"], now):
+                raise Refused("avd_phase_not_admitted")
         # The trusted adapter must bind processes and observe a real device before
         # any scoped guest probe. Never accept observations through an RPC argument.
         try:
             identity = broker.startup_io.observe(device, journal)
-            expected = dict(
-                **journal,
-                parent_pid=journal["worker"]["pid"],
-                avd_name=device.avd_name,
-                data_path=device.avd_data_path,
-                userdata=device.avd_data_path + "/userdata-qemu.img",
-                console_port=device.console_port,
-                adb_port=device.adb_port,
-                serial=f"emulator-{device.console_port}",
-                api=device.api,
-                abi=device.abi,
-                socket_pids=[journal["child"]["pid"]],
-                userdata_pids=[journal["child"]["pid"]],
-                device_state="device",
-                boot_complete="1",
-            )
-            readiness = {"device_state", "boot_complete"}
-            if {k: v for k, v in identity.items() if k not in readiness} != {
-                k: v for k, v in expected.items() if k not in readiness
-            }:
-                raise StartupMismatch("process/guest binding mismatch")
-            if identity.get("device_state") != "device" or identity.get("boot_complete") != "1":
-                raise StartupNotReady("guest boot not complete")
+            verified_identity(device, journal, identity)
         except StartupMismatch as exc:
             with broker.transaction() as (conn, now):
                 broker._owned(conn, lease_id, principal, run_id)
@@ -287,9 +307,11 @@ def verify(broker, *, lease_id, principal, run_id):
             raise Refused("startup_observation_unavailable") from exc
         with broker.transaction() as (conn, now):
             _group(broker, conn, now, lease_id, principal, run_id)
+            if grant != broker._admission.avd_grants.get("identity") or now >= grant["expires_at"]:
+                raise Refused("avd_phase_not_admitted")
             conn.execute(
                 "UPDATE broker_launches SET identity=? WHERE lease_id=?",
-                (json.dumps(identity), lease_id),
+                (json.dumps(dict(identity, observed_at=now)), lease_id),
             )
         return dict(lease_id=lease_id, identity=identity)
 
