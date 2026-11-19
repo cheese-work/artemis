@@ -116,9 +116,21 @@ One reconciler owns device state for every source:
 - Connections report `running`, `busy`, `idle` or `disconnected`. A device takes
   the best state among connections that reported within the TTL (`running`, then
   `busy`, then `idle`); if all say `disconnected` it is `disconnected`.
-- On startup the reconciler writes an `unknown` interval from the last known
-  state to now. The availability timeline never claims a device was idle while
-  nobody knew.
+- Each successful lifecycle tick persists the server time in SQLite. On startup
+  the reconciler marks known devices `unknown` from that checkpoint until new
+  observations settle. It never starts the interval before the device's latest
+  transition. On first upgrade, with no checkpoint, it conservatively uses that
+  transition's timestamp instead.
+- `ARTEMIS_DEVICE_EVENT_RETENTION_DAYS` defaults to `30`. Set a whole number
+  from 1 to 3650 before starting the server; invalid values use the default.
+  The first tick and then hourly ticks remove expired state events, keeping one
+  older state per device to seed the window. Consecutive repeats are removed;
+  distinct transitions inside the window and non-state events are kept.
+- `DeviceEventRepository.timeline` returns `(state, start, end)` intervals over
+  a half-open window. Bounds are Unix seconds; convert local, timezone-aware
+  times to timestamps before calling it so the repeated hour at fall-back stays
+  distinct. History without a recorded state is `unknown`. Reads before the
+  retention window may lack history.
 
 ## Troubleshooting
 
