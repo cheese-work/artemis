@@ -33,6 +33,9 @@ from artemis.config.paths import get_temp_dir
 from artemis.runtime.process_probe import pid_is_alive
 
 
+LEASE_HANDOFF_ENV = "ARTEMIS_DEVICE_LEASE_HANDOFF"
+
+
 class DeviceBusyError(RuntimeError):
     """Raised when another Artemis process already owns a device."""
 
@@ -89,7 +92,6 @@ class DeviceExecutionLock:
     # CHE-5297: path of the DLP-1 broker's shared claim guard (flock), when composed.
     ADMISSION_GUARD_ENV = "ARTEMIS_DEVICE_ADMISSION_GUARD"
     LOCK_SCOPE_ENV = "ARTEMIS_ADB_ENDPOINT_ID"
-    LEASE_HANDOFF_ENV = "ARTEMIS_DEVICE_LEASE_HANDOFF"
 
     @staticmethod
     def _normalize_device_id(device_id: str | None) -> str:
@@ -146,7 +148,7 @@ class DeviceExecutionLock:
         self.ingress = ingress or os.getenv("ARTEMIS_TASK_INGRESS") or "sdk"
         self._queue_path: Path | None = None
         self._acquired = False
-        self._handoff = os.getenv(self.LEASE_HANDOFF_ENV)
+        self._handoff = os.getenv(LEASE_HANDOFF_ENV)
 
     @classmethod
     def _device_lock_path(
@@ -579,7 +581,7 @@ class DeviceExecutionLock:
             os.close(fd)
 
     def _try_acquire_owner_lock(self) -> bool:
-        handoff = self._handoff if self._handoff is not None else os.getenv(self.LEASE_HANDOFF_ENV)
+        handoff = self._handoff if self._handoff is not None else os.getenv(LEASE_HANDOFF_ENV)
         if handoff is not None:
             return self._try_broker_owner_lock(handoff)
         with self._admission_guard():

@@ -59,6 +59,7 @@ from artemis.controllers.platform_specific_commands_controller import (
     get_first_device,
 )
 from artemis.runtime import DeviceExecutionLock, device_policy, trace_store
+from artemis.runtime.device_lock import LEASE_HANDOFF_ENV
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.cancel_requests import watch_for_cancel_request
@@ -198,7 +199,7 @@ class Agent(AgentBase):
         retry_count: int = 5,
         retry_wait_seconds: int = 5,
     ):
-        handoff = os.getenv(DeviceExecutionLock.LEASE_HANDOFF_ENV)
+        handoff = os.getenv(LEASE_HANDOFF_ENV)
         if self._initialized and (handoff is not None or self._lease_execution_lock is not None):
             lock = self._lease_execution_lock
             if lock is None or not await asyncio.to_thread(lock.validate_handoff):

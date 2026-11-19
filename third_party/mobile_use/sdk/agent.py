@@ -71,6 +71,7 @@ from artemis.data_engine.trace import DataEngineCallbackHandler
 from artemis.graph.graph import get_graph
 from artemis.graph.state import State
 from artemis.runtime import DeviceExecutionLock
+from artemis.runtime.device_lock import LEASE_HANDOFF_ENV
 from artemis.sdk.run_outcome import attach_test_summary, resolve_trace_suffix
 from artemis.sdk.types.agent import AgentConfig
 from artemis.utils.startup_progress import publish_startup_progress
@@ -144,7 +145,7 @@ class AgentBase:
         retry_count: int = 5,
         retry_wait_seconds: int = 5,
     ):
-        if DeviceExecutionLock.LEASE_HANDOFF_ENV in os.environ:
+        if LEASE_HANDOFF_ENV in os.environ:
             raise AgentError("Managed AVD handoff requires the Artemis SDK agent.")
 
         if os.environ.get("ARTEMIS_CLOUD_MODE") != "1" and not which("adb"):
@@ -516,7 +517,7 @@ class AgentBase:
             if managed_lock is not None:
                 if not await asyncio.to_thread(managed_lock.validate_handoff):
                     raise AgentError("Managed AVD execution lock is no longer admitted.")
-            elif DeviceExecutionLock.LEASE_HANDOFF_ENV in os.environ:
+            elif LEASE_HANDOFF_ENV in os.environ:
                 raise AgentError(
                     "Managed AVD execution lock was not acquired during initialization."
                 )
