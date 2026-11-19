@@ -1,19 +1,23 @@
 """Lease launch tests: synthetic processes/ADB only, never a live emulator."""
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import copy
 from dataclasses import asdict, replace
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_device_lease_startup as fixtures
 from broker import DeviceRegistry, Refused
 from daemon import BrokerServer, ControlServer
+from device_lease.claims import ClaimLedger
 from owned_recovery import OwnedRecovery
 import startup
 import refresh
@@ -77,6 +81,8 @@ class FakeLifecycle:
 
     def observe(self, device, journal):
         self.calls.append("observe")
+        if not self.available:
+            raise ValueError("shared listener unavailable")
         return copy.deepcopy(self.observation)
 
     def check_binding(self, device, journal, identity, *, work):
@@ -119,6 +125,341 @@ class LaunchTests(unittest.TestCase):
 
     def owner(self):
         return dict(lease_id=self.group["lease_id"], principal="agent", run_id="run-1")
+
+    def handoff_ledger(self):
+        self.locks = Path(self.temp.name) / "locks"
+        self.locks.mkdir()
+        guard = compose.FileGuard(Path(self.temp.name) / "claims.guard")
+        self.ledger = ClaimLedger(
+            self.path, guard, self.registry, self.locks, clock=lambda: self.now
+        )
+        self.broker.admission_guard = guard
+        self.broker.admission_sources = {
+            "artemis": compose.artemis_locks_reader(self.locks),
+            "android": self.ledger.read,
+        }
+        self.broker.ensure_schema()
+        self.ledger.census(
+            generation=7,
+            observed_at=self.now,
+            complete=True,
+            writers=["android", "artemis"],
+            claims=[],
+        )
+
+    def test_owner_claim_handoff_is_atomic_and_retains_original_claim(self):
+        self.handoff_ledger()
+        claim = self.ledger.claim(
+            self.device.device_id, owner="agent", run_id="run-1", reference="prior"
+        )
+        before = self.ledger.snapshot()["claims"]
+        self.proof["claim_handoff"] = dict(
+            claim_id=claim,
+            owner="foreign",
+            run_id="run-1",
+            census_generation=7,
+            reference="consent",
+        )
+        self.publish()
+        with self.assertRaises(Refused):
+            self.start()
+        self.assertEqual(self.ledger.snapshot()["claims"], before)
+        self.proof["claim_handoff"]["owner"] = "agent"
+        self.publish()
+        self.proof["claim_handoff"]["census_generation"] = 6
+        self.publish()
+        with self.assertRaises(Refused):
+            self.start()
+        self.proof["claim_handoff"]["census_generation"] = 7
+        self.publish()
+
+        def interrupt(name):
+            if name == "acquire:device":
+                raise RuntimeError("fixture rollback")
+
+        self.broker.boundary = interrupt
+        with self.assertRaisesRegex(RuntimeError, "fixture rollback"):
+            self.start()
+        self.assertEqual(self.ledger.snapshot()["claims"], before)
+        self.broker.boundary = lambda name: None
+        with ThreadPoolExecutor(2) as pool:
+            results = list(pool.map(lambda unused: self.start(), range(2)))
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(self.ledger.snapshot()["claims"], [])
+        with sqlite3.connect(self.path) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM broker_groups").fetchone(), (1,))
+            original = conn.execute("SELECT claim FROM android_claim_handoffs").fetchone()[0]
+        self.assertEqual(json.loads(original), before[0])
+
+    def sdk_handoff(self, phase):
+        from artemis.runtime.device_lock import DeviceExecutionLock
+        from broker import process_identity
+
+        self.handoff_ledger()
+        self.record.update(
+            {key: value for key, value in process_identity(os.getpid()).items() if key != "mode"}
+        )
+        self.write_record()
+        self.server = BrokerServer(Path(self.temp.name) / "holder", self.broker)
+        self.server.timeout = 2
+        self.addCleanup(self.server.server_close)
+        self.group = self.start()
+        self.launch()
+        self.grants = {"identity": self.phase_grant("identity")}
+        self.broker.avd_grants = lambda: self.grants
+        self.verify()
+        self.handoff = dict(
+            socket=str(self.server.socket_path),
+            lease_id=self.group["lease_id"],
+            device_id=self.device.device_id,
+            issue_id="CHE-fixture",
+            generation=1,
+            phase=phase,
+        )
+        self.env = dict(
+            ARTEMIS_DEVICE_ADMISSION_GUARD=str(self.ledger.guard.path),
+            ARTEMIS_DEVICE_CLAIMS_DB=str(self.path),
+            MULTICA_AGENT_ID="agent",
+            MULTICA_TASK_ID="run-1",
+            MULTICA_RUN_BINDING_ID=self.binding_id,
+        )
+        with patch("artemis.runtime.device_lock.get_temp_dir", return_value=self.locks):
+            self.lock = DeviceExecutionLock(self.device.aliases[0])
+
+    def lock_attempt(self, **changes):
+        with (
+            patch.dict(
+                os.environ,
+                self.env | {"ARTEMIS_DEVICE_LEASE_HANDOFF": json.dumps(self.handoff | changes)},
+            ),
+            ThreadPoolExecutor(1) as pool,
+        ):
+            served = pool.submit(self.server.handle_request)
+            result = self.lock._try_acquire_owner_lock()
+            served.result(timeout=5)
+            return result
+
+    def reviewed_grant(self, phase):
+        revision = "d" * 64
+        return (
+            self.phase_grant(phase)
+            | dict(
+                testcase=dict(
+                    author="fixture-author",
+                    revision=revision,
+                    reviews=[
+                        dict(
+                            reviewer=reviewer,
+                            revision=revision,
+                            verdict="PASS",
+                            reference=reviewer + "-review",
+                        )
+                        for reviewer in ("reviewer-a", "reviewer-b")
+                    ],
+                ),
+            )
+            | ({"qualification": "independently-verified-qualification"} if phase == "work" else {})
+        )
+
+    def test_sdk_lock_admits_first_qualification_only_with_its_own_reviewed_grant(self):
+        self.sdk_handoff("qualification")
+        self.assertFalse(self.lock_attempt())
+        self.grants["qualification"] = self.phase_grant("qualification")
+        self.assertFalse(self.lock_attempt())
+        self.grants["qualification"] = self.reviewed_grant("qualification")
+        with patch.dict(os.environ, self.env):
+            self.assertFalse(self.lock._try_acquire_owner_lock())
+        self.env["MULTICA_TASK_ID"] = "foreign"
+        self.assertFalse(self.lock_attempt())
+        self.env["MULTICA_TASK_ID"] = "run-1"
+        for changes in (
+            {"device_id": self.device.aliases[0]},
+            {"issue_id": "foreign"},
+            {"generation": 2},
+            {"phase": "work"},
+        ):
+            self.assertFalse(self.lock_attempt(**changes))
+        self.assertFalse(self.lock.path.exists())
+        self.assertTrue(self.lock_attempt(), "verified qualification holder was refused")
+        self.assertTrue(
+            self.lock_attempt(), "exact retry did not reuse the admitted execution lock"
+        )
+        live = self.broker.status(**self.owner())
+        self.assertEqual(live["access_phase"], "work")
+        self.assertEqual(live["expires_at"], self.group["expires_at"])
+        self.assertEqual(live["hard_deadline"], self.group["hard_deadline"])
+        self.record_path.unlink()
+        self.assertFalse(self.lock_attempt())
+        self.assertEqual(self.broker.status(**self.owner())["state"], "fencing")
+
+    def test_sdk_initialization_does_not_probe_the_guest_before_handoff(self):
+        from artemis.runtime.device_lock import DeviceBusyError
+        from artemis.sdk.agent import Agent, DevicePlatform
+
+        self.sdk_handoff("qualification")
+        agent = Agent.__new__(Agent)
+        agent._initialized = False
+        agent._session_id = "fixture"
+        agent._config = SimpleNamespace(
+            device_id=self.device.aliases[0],
+            device_platform=DevicePlatform.ANDROID,
+            servers=SimpleNamespace(adb_host="127.0.0.1", adb_port=5037),
+            concurrency_mode="per_device",
+            max_concurrency=None,
+        )
+        probe = AsyncMock(return_value=True)
+        with (
+            patch.dict(
+                os.environ, self.env | {"ARTEMIS_DEVICE_LEASE_HANDOFF": json.dumps(self.handoff)}
+            ),
+            patch("artemis.runtime.device_lock.get_temp_dir", return_value=self.locks),
+            patch.object(agent, "_init_device", probe),
+            ThreadPoolExecutor(1) as pool,
+        ):
+            refused = pool.submit(self.server.handle_request)
+            with self.assertRaises(DeviceBusyError):
+                asyncio.run(agent._init_internal())
+            refused.result(timeout=5)
+            probe.assert_not_awaited()
+            self.grants["qualification"] = self.reviewed_grant("qualification")
+            admitted = pool.submit(self.server.handle_request)
+            self.assertTrue(asyncio.run(agent._init_internal()))
+            admitted.result(timeout=5)
+            probe.assert_awaited_once()
+            self.assertEqual(self.broker.status(**self.owner())["access_phase"], "work")
+            agent._lease_execution_lock.release()
+
+    def test_cancelled_sdk_init_releases_lock_after_pending_acquisition(self):
+        from artemis.sdk.agent import Agent, DevicePlatform
+
+        agent = Agent.__new__(Agent)
+        agent._initialized = False
+        agent._session_id = "fixture"
+        agent._config = SimpleNamespace(
+            device_id="emulator-5554",
+            device_platform=DevicePlatform.ANDROID,
+            servers=SimpleNamespace(adb_host="127.0.0.1", adb_port=5037),
+            concurrency_mode="per_device",
+            max_concurrency=None,
+        )
+        lock = Mock()
+        probe = AsyncMock()
+
+        async def exercise():
+            started, finish, released = asyncio.Event(), asyncio.Event(), asyncio.Event()
+            lock.release.side_effect = released.set
+            worker = None
+
+            async def acquire_in_thread(acquire, **kwargs):
+                nonlocal worker
+                worker = asyncio.current_task()
+                started.set()
+                await finish.wait()
+                acquire(**kwargs)
+
+            with patch("artemis.sdk.agent.asyncio.to_thread", side_effect=acquire_in_thread):
+                initializing = asyncio.create_task(agent._init_internal())
+                await started.wait()
+                initializing.cancel()
+                await asyncio.sleep(0)
+                initializing.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await initializing
+                lock.release.assert_not_called()
+                self.assertFalse(worker.cancelled(), "cancellation reached the pending acquisition")
+                finish.set()
+                await asyncio.wait_for(released.wait(), timeout=2)
+                lock.release.assert_called_once_with()
+                probe.assert_not_awaited()
+                self.assertIsNone(agent._lease_execution_lock)
+
+        with (
+            patch.dict(os.environ, {"ARTEMIS_DEVICE_LEASE_HANDOFF": "fixture"}),
+            patch("artemis.sdk.agent.DeviceExecutionLock", return_value=lock),
+            patch.object(agent, "_init_device", probe),
+        ):
+            asyncio.run(exercise())
+
+    def test_failed_sdk_readback_refuses_access_and_allows_an_exact_retry(self):
+        self.sdk_handoff("work")
+        self.grants["work"] = self.reviewed_grant("work")
+        with patch("device_lease.claims.check_sdk_handoff", side_effect=OSError("readback failed")):
+            self.assertFalse(self.lock_attempt())
+        self.assertFalse(self.lock._acquired)
+        installed = self.lock.path.read_bytes()
+        self.assertTrue(self.lock_attempt())
+        self.assertEqual(self.lock.path.read_bytes(), installed)
+        self.lock.release()
+
+    def test_work_handoff_fails_closed_on_lock_failure_then_fences_on_restart(self):
+        self.sdk_handoff("work")
+        self.grants["work"] = self.reviewed_grant("work")
+        self.lock.path.write_text(json.dumps({"device_id": self.device.device_id, "pid": 8123}))
+        self.assertFalse(self.lock_attempt())
+        self.assertEqual(self.broker.status(**self.owner())["access_phase"], "starting")
+        self.lock.path.unlink()
+        self.io.observation["boot_complete"] = "0"
+        self.assertFalse(self.lock_attempt())
+        self.io.observation["boot_complete"] = "1"
+        self.io.available = False
+        self.assertFalse(self.lock_attempt())
+        self.io.available = True
+
+        def interrupt(name):
+            if name == "work:lock_installed":
+                raise RuntimeError("fixture rollback")
+
+        self.broker.boundary = interrupt
+        self.assertFalse(self.lock_attempt())
+        self.assertFalse(self.lock.path.exists())
+        self.assertEqual(self.broker.status(**self.owner())["access_phase"], "starting")
+        self.broker.boundary = lambda name: None
+        self.assertTrue(self.lock_attempt(), "verified work holder was refused")
+        self.server.server_close()
+        replacement = dict(self.io.child, process_start="reused")
+        self.assertEqual(self.recover_after_restart({8001: self.io.worker, 8002: replacement}), [])
+        status = self.broker.status(**self.owner())
+        self.assertEqual((status["state"], status["access_phase"]), ("quarantine", "work"))
+        self.assertEqual(status["hard_deadline"], self.group["hard_deadline"])
+        self.assertEqual(status["expires_at"], self.group["expires_at"])
+        self.refused(
+            "lease_not_active",
+            lambda: self.broker.record_change(
+                **self.owner(),
+                change=dict(kind="home", device_id=self.device.device_id, allowed=True),
+            ),
+        )
+        self.refused(
+            "run_already_holds", lambda: self.start(idempotency_key="blocked-by-quarantine")
+        )
+        reconcile = dict(lease_id=self.group["lease_id"], evidence="fixture-cleanup")
+        self.refused(
+            "state_conflict",
+            lambda: self.broker.verify_release(
+                **reconcile,
+                verifier=self.broker.leader_id,
+                passed=True,
+            ),
+        )
+        self.broker.recover_quarantine(**reconcile, recovery_owner="ops-fixture")
+        self.refused(
+            "leader_required",
+            lambda: self.broker.verify_release(
+                **reconcile,
+                verifier="agent",
+                passed=True,
+            ),
+        )
+        self.lock.release()
+        self.assertEqual(
+            self.broker.verify_release(
+                **reconcile,
+                verifier=self.broker.leader_id,
+                passed=True,
+            )["state"],
+            "released",
+        )
+        self.assertEqual(self.start(idempotency_key="after-independent-release")["state"], "active")
 
     def test_identity_probe_requires_its_own_grant(self):
         self.group = self.start()
