@@ -11,11 +11,15 @@ REMOVAL_MATRIX_SHA256 = "1b652f6eece9b1ce8fe06023a8f8d436dd336c329e0d596c6bd7ecf
 NONRUN_ASSERTIONS = {
     "event_10",
     "event_11",
+    "removal_01",
     "removal_05",
     "removal_06",
+    "removal_07",
+    "removal_08",
     "removal_09",
     "removal_10",
     "removal_11",
+    "removal_12",
 }
 
 EXPECTED_EVENTS = [
@@ -265,18 +269,18 @@ def test_candidate_binds_executable_assertions_command_provider_and_fixture_limi
         assert goals_by_id[nonrunnable]["assertion_ids"] == []
         assert "DO NOT INVOKE" in goals_by_id[nonrunnable]["text"]
 
-    all_goal_ids = {
+    goal_assertion_ids = [
         assertion_id for goal in receipt["goals"] for assertion_id in goal["assertion_ids"]
-    }
+    ]
+    all_goal_ids = set(goal_assertion_ids)
+    assert len(goal_assertion_ids) == len(all_goal_ids)
     assert not (NONRUN_ASSERTIONS & all_goal_ids)
     assert set(goal_01["assertion_ids"]) == {
         *(f"event_{index:02d}" for index in range(1, 10)),
         "removal_02",
         "removal_04",
     }
-    assert set(goal_05["assertion_ids"]) == {
-        f"removal_{index:02d}" for index in (1, 2, 3, 4, 7, 8, 12)
-    }
+    assert set(goal_05["assertion_ids"]) == {"removal_03"}
     assert "negative_control_title" not in goal_05["text"]
     assert "WRONG TITLE" not in goal_05["text"]
     assert "negative_control_title" in goal_06["text"]
@@ -324,12 +328,14 @@ def test_candidate_binds_executable_assertions_command_provider_and_fixture_limi
         "env -u GOOGLE_API_KEY -u GEMINI_API_KEY",
         "realpath",
         "--traces-path <run evidence dir>/traces",
+        "--verification-level <goal-specific verification level>",
     ):
         assert flag in command
     assert "CONFIG_SHA256" not in command
     config_digest = receipt["execution"]["llm_config"]["sha256"]
     assert f"= '{config_digest}'" in command
     assert "set -euo pipefail" in command
+    assert receipt["execution"]["verification_level_by_goal"]["goal_06_negative_control"] == "final"
     assert "--locked-app com.palio.ai" in command
     assert (
         "when the device policy is enabled"
@@ -385,16 +391,40 @@ def test_candidate_binds_executable_assertions_command_provider_and_fixture_limi
         "assertion_id": "negative_control_title",
         "locale": "en",
         "screen": "Welcome onboarding screen",
-        "text_source": "onboarding/app_en.arb key welcomeMessage",
-        "actual_value": "Start practicing English with Palios, your AI speaking buddy.",
+        "text_source": "lib/presentation/l10n/app_en.arb key onboardingWelcomeMessage",
+        "actual_value": "Hello! I'm Palios, your personal AI tutor. I will help you learn a new language and communicate fluently.",
         "wrong_value": "Palios — WRONG TITLE",
         "expected_exit": 1,
         "proof": "complete native summary has exactly this failed item, the observed title is different, marker ARTEMIS_ASSERTION_EXIT=1 is present, and process exit is 1",
     }
     assert control["assertion_id"] in journey
     assert control["wrong_value"] in journey
+    assert receipt["execution"]["verification_level_by_goal"]["goal_06_negative_control"] == "final"
 
     fixture = receipt["fixture"]
+    removal_flows = fixture["removal_flows"]
+    runnable_removals = {
+        assertion_id
+        for goal in receipt["goals"]
+        for assertion_id in goal["assertion_ids"]
+        if assertion_id.startswith("removal_")
+    }
+    assert set(removal_flows) == runnable_removals == {
+        "removal_02",
+        "removal_03",
+        "removal_04",
+    }
+    assert {
+        assertion_id: flow["goal"] for assertion_id, flow in removal_flows.items()
+    } == {
+        "removal_02": "goal_01",
+        "removal_03": "goal_05",
+        "removal_04": "goal_01",
+    }
+    for assertion_id, flow in removal_flows.items():
+        assert flow["goal"] in goals_by_id
+        assert assertion_id in goals_by_id[flow["goal"]]["assertion_ids"]
+        assert flow["flow"].startswith("Pinned clean first-run onboarding")
     assert fixture["reset"]["app_data"].endswith("shell pm clear com.palio.ai")
     assert fixture["onboarding"]["status"] == "RUNNABLE"
     assert fixture["onboarding"]["locale"] == "en"
@@ -409,6 +439,12 @@ def test_candidate_binds_executable_assertions_command_provider_and_fixture_limi
     assert "origin=app" in receipt["result_rule"]["removed_family_filter"]
     assert "fa-fa-svc-threadtime.log" in fixture["synchronization"]
     assert "fa-fa-svc-threadtime.log" in goals_by_id["goal_05"]["text"]
+    counter = fixture["log_counter"]
+    counter_path = REPO_ROOT / counter["path"]
+    assert hashlib.sha256(counter_path.read_bytes()).hexdigest() == counter["sha256"]
+    assert "fa-fa-svc-threadtime.log" in counter["input"]
+    assert "line order" in counter["output"]
+    assert "raw parameter" in counter["output"]
     assert fixture["login"]["status"] == "NOT-RUN"
     assert "getprop debug.firebase.analytics.app" in fixture["fa_debug"]["restore"]
     assert "do not assume .none." in fixture["fa_debug"]["restore"]
@@ -416,3 +452,35 @@ def test_candidate_binds_executable_assertions_command_provider_and_fixture_limi
     for scenario in ("speaking", "flash_cards", "ads", "paywall"):
         assert fixture[scenario]["status"] == "NOT-RUN"
     assert "obd_full_8_scr_view" in journey and "DEFERRED" in journey
+
+
+def test_pinned_fa_log_counter_preserves_order_params_and_custom_removal_filter():
+    import importlib.util
+
+    counter_path = REPO_ROOT / "qualification/fa_log_counter.py"
+    spec = importlib.util.spec_from_file_location("fa_log_counter", counter_path)
+    counter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(counter)
+
+    log = (REPO_ROOT / "tests/fixtures/qualification/fa-fa-svc-threadtime.log").read_bytes()
+    events = counter.read_events(log)
+    rows = {
+        row["assertion_id"]: row
+        for row in counter.build_ledger(events, _read_candidate())["rows"]
+    }
+
+    assert rows["event_02"]["count"] == 1
+    assert rows["event_02"]["observations"] == [
+        {"line": 1, "origin": "app", "name": "obd_1_scr_view", "params": "{screen=welcome}"}
+    ]
+    assert rows["removal_03"]["count"] == 1
+    assert rows["removal_03"]["observations"][0]["name"] == "navigation_route_changed"
+    assert all(
+        observation["origin"] == "app"
+        for observation in rows["removal_03"]["observations"]
+    )
+    assert [event["name"] for event in events] == [
+        "obd_1_scr_view",
+        "screen_view",
+        "navigation_route_changed",
+    ]

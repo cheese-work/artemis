@@ -36,7 +36,7 @@
     },
     "testcase_source": {
       "journey_path": "qualification/journeys/che6852_st008_event_map.v1.md",
-      "journey_digest_sha256": "361894731875e9b4862af2dfa6eb9342737219cef7b2ffefce966fd16e133e6d",
+      "journey_digest_sha256": "7e0f695aa97c1c7569eb810f69df313552af487fc7c5c5bc03f24d5dc9dc8bc0",
       "checkout": "Use the cheese-work/artemis checkout for PR #311 at the exact candidate head SHA in the CHE-6843 handoff. From its root, git rev-parse HEAD must equal that SHA before execution.",
       "revision_policy": "A change to journey, receipt, runner, app source, effective lock, override, fixture contract or pinned goal requires a new candidate revision and fresh independent reviews."
     }
@@ -84,7 +84,8 @@
       },
       "open_point": "No provider call until both independent reviews approve this exact candidate and the Android device squad records AVD admission."
     },
-    "command_template": "set -euo pipefail; ARTEMIS_CHECKOUT=\"$(git rev-parse --show-toplevel)\"; test \"$(git rev-parse HEAD)\" = '<candidate head SHA from CHE-6843 handoff>'; EXPECTED_CONFIG_PATH=\"$(realpath \"$ARTEMIS_CHECKOUT\")/qualification/configs/che6852_st008_openai.artemis.jsonc\"; CONFIG_PATH=\"$(realpath \"$ARTEMIS_CHECKOUT/qualification/configs/che6852_st008_openai.artemis.jsonc\")\"; test \"$CONFIG_PATH\" = \"$EXPECTED_CONFIG_PATH\"; test \"$(sha256sum \"$CONFIG_PATH\" | cut -d' ' -f1)\" = '509c567dd553de882f9b5f9d952e7f91a97007bc326ded3fa6336e85f3ea1c6b'; env -u GOOGLE_API_KEY -u GEMINI_API_KEY ARTEMIS_ARTEMIS_JSONC=\"$CONFIG_PATH\" artemis run '<exact goal text>' --standalone --profile pro --assertion-exit --device-serial <leased serial> --locked-app com.palio.ai --disable-planner-validation --verification-level strict --session-id <fresh UUIDv4> --run-id <fresh UUIDv4> --traces-path <run evidence dir>/traces",
+    "command_template": "set -euo pipefail; ARTEMIS_CHECKOUT=\"$(git rev-parse --show-toplevel)\"; test \"$(git rev-parse HEAD)\" = '<candidate head SHA from CHE-6843 handoff>'; EXPECTED_CONFIG_PATH=\"$(realpath \"$ARTEMIS_CHECKOUT\")/qualification/configs/che6852_st008_openai.artemis.jsonc\"; CONFIG_PATH=\"$(realpath \"$ARTEMIS_CHECKOUT/qualification/configs/che6852_st008_openai.artemis.jsonc\")\"; test \"$CONFIG_PATH\" = \"$EXPECTED_CONFIG_PATH\"; test \"$(sha256sum \"$CONFIG_PATH\" | cut -d' ' -f1)\" = '509c567dd553de882f9b5f9d952e7f91a97007bc326ded3fa6336e85f3ea1c6b'; env -u GOOGLE_API_KEY -u GEMINI_API_KEY ARTEMIS_ARTEMIS_JSONC=\"$CONFIG_PATH\" artemis run '<exact goal text>' --standalone --profile pro --assertion-exit --device-serial <leased serial> --locked-app com.palio.ai --disable-planner-validation --verification-level <goal-specific verification level> --session-id <fresh UUIDv4> --run-id <fresh UUIDv4> --traces-path <run evidence dir>/traces",
+    "verification_level_by_goal": {"goal_01":"strict","goal_05":"strict","goal_06_negative_control":"final"},
     "locked_app_permission_dialogs": "When the device policy is enabled for the leased serial, static source review of artemis/runtime/device_policy.py shows the policy requires the resumed package to equal com.palio.ai and latches LeftTestApp otherwise. The permission-controller dialog has a different resumed package. On an unrestricted serial this lock is not enforced as a foreground lock. Runtime behavior is untested; goal_02 remains do not invoke under this candidate.",
     "provider_preflight": {
       "dotenv_google_keys": "stop_if_present",
@@ -156,10 +157,23 @@
       ],
       "restore": "Before setup, capture getprop debug.firebase.analytics.app, getprop log.tag.FA, and getprop log.tag.FA-SVC. Restore each property to its exact captured value; do not assume .none. Disable the capture process after the observation window."
     },
-    "synchronization": "Visible UI plus timestamped FA/FA-SVC capture saved as <run evidence dir>/fa-fa-svc-threadtime.log. Checker reads that exact file using the runner log-reader input; retain that input's SHA-256. Event assertion requires exact event, allowed parameters, count and ordering in the complete observation window."
+    "synchronization": "Visible UI plus timestamped FA/FA-SVC capture saved as <run evidence dir>/fa-fa-svc-threadtime.log. Goal_05 uses the same complete goal_01 capture; run qualification/fa_log_counter.py against that exact file and receipt. Keep its SHA-256-linked counter ledger beside the native summary. The ledger preserves source line order, origin, event name and raw parameter bundle.",
+    "log_counter": {
+      "path": "qualification/fa_log_counter.py",
+      "sha256": "dca344a274a5e6dfb7ba3f5466af7d51908d8e854cbaf8caae9adf9b06ab9358",
+      "input": "<run evidence dir>/fa-fa-svc-threadtime.log from goal_01",
+      "command": "python qualification/fa_log_counter.py --log <run evidence dir>/fa-fa-svc-threadtime.log --receipt qualification/candidates/che6852_st008_event_map.v1.json --output <run evidence dir>/fa-count-ledger.json",
+      "output": "One row per assertion_id with count and observations in source line order; each observation retains origin, event name and raw parameter bundle, and the ledger carries the input log SHA-256. Removal families count only origin=app.",
+      "malformed_event_rule": "Stop and mark affected rows NOT-RUN if any FA-SVC Logging event line cannot be parsed."
+    },
+    "removal_flows": {
+      "removal_02": {"goal":"goal_01","flow":"Pinned clean first-run onboarding from reset through login redirect; inspect the complete goal_01 capture."},
+      "removal_03": {"goal":"goal_05","flow":"Pinned clean first-run onboarding from reset through login redirect; count on the exact goal_01 capture using log_counter.command."},
+      "removal_04": {"goal":"goal_01","flow":"Pinned clean first-run onboarding from reset through login redirect; inspect the complete goal_01 capture."}
+    }
   },
   "result_rule": {
-    "observed_requires": "A row is OBSERVED only if the native ledger contains a passed native ledger item naming its assertion_id and reporting the checked count and parameters.",
+    "observed_requires": "A row is OBSERVED only if the native ledger contains a passed item naming its assertion_id and reporting checked count and parameters, and the deterministic host counter ledger for the same capture has the matching assertion_id, count, raw parameters and source order.",
     "exit_zero_sets_no_row_status": true,
     "exit_zero_rule": "Exit 0 alone sets no event or removal row status. Missing or unchecked ledger items remain NOT-RUN with unknown count.",
     "removed_family_filter": "Count only custom events with origin=app in the FA-SVC log; automatic Firebase events do not count for removal families."
@@ -196,8 +210,8 @@
       "assertion_id": "negative_control_title",
       "locale": "en",
       "screen": "Welcome onboarding screen",
-      "text_source": "onboarding/app_en.arb key welcomeMessage",
-      "actual_value": "Start practicing English with Palios, your AI speaking buddy.",
+      "text_source": "lib/presentation/l10n/app_en.arb key onboardingWelcomeMessage",
+      "actual_value": "Hello! I'm Palios, your personal AI tutor. I will help you learn a new language and communicate fluently.",
       "wrong_value": "Palios — WRONG TITLE",
       "expected_exit": 1,
       "proof": "complete native summary has exactly this failed item, the observed title is different, marker ARTEMIS_ASSERTION_EXIT=1 is present, and process exit is 1"
@@ -232,15 +246,15 @@
     },
     {
       "id": "goal_05",
-      "assertion_ids": ["removal_01","removal_02","removal_03","removal_04","removal_07","removal_08","removal_12"],
-      "text": "For the complete FA/FA-SVC window, assert zero occurrences for removal_01=app_open|app_foreground|app_background, removal_02=splash_bootstrap_started|splash_bootstrap_completed|splash_bootstrap_failed, removal_03=navigation_route_changed|screen_view, removal_04=language_selected|onboarding_started|onboarding_next_tapped|onboarding_completed, removal_07=home_tab_selected|practice_tab_selected|redeem_tab_selected|rank_tab_selected|account_tab_selected, removal_08=account_language_opened|account_language_changed|account_rate_app_tapped|account_contact_us_tapped|account_share_app_tapped, and removal_12=api_call_failed|api_call_timeout. Count only custom events with origin=app in the FA-SVC log; automatic Firebase events do not count. The Checker reads the exact saved FA/FA-SVC window from <run evidence dir>/fa-fa-svc-threadtime.log using the runner log-reader input. Preserve automatic Firebase collection. Missing fixture or incomplete capture is NOT-RUN, never zero.",
-      "sha256": "dc76123b93987d9927a679ca03ec61b9a7fb5896375876b0008954269a78ab10"
+      "assertion_ids": ["removal_03"],
+      "text": "Bind goal_05 to the complete FA/FA-SVC log captured during goal_01; do not launch a second fixture. Run the pinned qualification/fa_log_counter.py command from the receipt against <run evidence dir>/fa-fa-svc-threadtime.log. Assert removal_03=navigation_route_changed|screen_view has count 0 in that capture. Count only custom events with origin=app in FA-SVC; automatic Firebase events do not count for removal families. Preserve automatic Firebase collection. The counter output must include the receipt assertion_id, count, source line order, event origin, event name, raw parameters, and source-log SHA-256.",
+      "sha256": "627ab864288f29f78b02435081dd4e720e6e7386933dc8dfb4f6e33222c5984d"
     },
     {
       "id": "goal_06_negative_control",
       "assertion_ids": ["negative_control_title"],
-      "text": "Run the pinned clean onboarding fixture as a separate qualification attempt with locale en. On the Welcome onboarding screen, assert assertion_id=negative_control_title: visible text from onboarding/app_en.arb key welcomeMessage is exactly `Palios — WRONG TITLE`; the real value is `Start practicing English with Palios, your AI speaking buddy.` The native summary must contain exactly one failed item for this assertion, stdout must contain ARTEMIS_ASSERTION_EXIT=1, and process exit must equal 1. Keep this expected failure separate from positive runs; exit 0, exit 2, a missing marker, incomplete evidence or another failed item invalidates the control.",
-      "sha256": "a65b64470754fa50d8ca86a93d3a843c4c56f91a48ba3734b710c7ea507ae578"
+      "text": "Run the pinned clean onboarding fixture as a separate qualification attempt with locale en and --verification-level final. On the Welcome onboarding screen, assert assertion_id=negative_control_title: visible text from lib/presentation/l10n/app_en.arb key onboardingWelcomeMessage is exactly `Palios — WRONG TITLE`; the real value is `Hello! I'm Palios, your personal AI tutor. I will help you learn a new language and communicate fluently.` The native summary must contain exactly one failed item for this assertion, stdout must contain ARTEMIS_ASSERTION_EXIT=1, and process exit must equal 1. Keep this expected failure separate from positive runs; exit 0, exit 2, a missing marker, incomplete evidence or another failed item invalidates the control.",
+      "sha256": "f4301df106dfc715878e7666b3b6d7524ad87a4dda0a4caecbbe6b393b9fe1bc"
     }
   ],
   "coverage": {
