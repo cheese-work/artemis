@@ -1071,6 +1071,44 @@ or work grant. It reports these separately as `avd_readiness` in owner readback.
 No row in that output grants a lease, enables ordinary allocation, or completes
 the qualification or work handoff. An idle or unverified AVD has no such row.
 
+### Claim and SDK work handoff (CHE-6329)
+
+When the startup executor already owns an Android claim, the owner can record
+explicit consent in the owner-only startup snapshot as `claim_handoff` with
+`claim_id`, `owner`, `run_id`, `census_generation` and a consent `reference`.
+The claim owner and run must match the scoped startup proof and the live ledger
+row. The census generation must still be current and fresh. Under `claims.guard`,
+the broker moves the original claim and consent to `android_claim_handoffs` in the
+same transaction as the new occupying lease. A foreign SDK lock or reservation
+still blocks admission. A failed transaction leaves the original claim active.
+
+Before use, the `qualification` or `work` grant must also carry `testcase` with
+`author`, a SHA-256 `revision`, and exactly two `reviews`. Each review has a
+distinct independent `reviewer` and `reference`, the same `revision`, and a
+`verdict` of `PASS`. The authority supplies the required reviews in this trusted
+source. `work` also requires a `qualification` reference to independently
+verified qualification; the first `qualification` does not. Keep the separate
+`identity` grant live while the SDK revalidates device and boot evidence.
+
+Only for a separately admitted executor, the launcher supplies
+`ARTEMIS_DEVICE_LEASE_HANDOFF` as a JSON object with `socket` (absolute holder
+socket path), `lease_id`, canonical `device_id`, `issue_id`, authority `generation`
+and `phase` (`qualification` or `work`). The SDK keeps both claim guard variables
+and the existing `MULTICA_*` managed run binding. Initialize the SDK with the
+exact leased serial and shared `127.0.0.1:5037`; this is not a cloud/chat route.
+The broker checks the socket peer is the managed root or its live descendant,
+rechecks guest identity and boot, and installs the execution lock under the
+claim guard before committing the same lease to `work`. The SDK reads back the
+committed lock before probing the device. No bare lease ID or other alias earns
+an exception. Normal SDK ownership checks still apply outside this route.
+
+There is no added TTL, renewal, allocator, or independent managed-run registry.
+Loss of the admitted grant, live peer, lock, or verified host binding fences the
+lease. On restart every startup-origin lease is fenced before requests are
+served. Uncertain work cleanup stays quarantined and holds the slot until named
+recovery and independent release verification. No live admission, qualification
+or activation is implied by this source change.
+
 **Checklist for a separately admitted activation (not executed here):**
 
 1. Confirm reviewed default-branch SHA, independently verified prior release,

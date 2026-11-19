@@ -59,6 +59,7 @@ from artemis.controllers.platform_specific_commands_controller import (
     get_first_device,
 )
 from artemis.runtime import DeviceExecutionLock, device_policy, trace_store
+from artemis.runtime.device_lock import LEASE_HANDOFF_ENV
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.cancel_requests import watch_for_cancel_request
@@ -198,7 +199,58 @@ class Agent(AgentBase):
         retry_count: int = 5,
         retry_wait_seconds: int = 5,
     ):
+        handoff = os.getenv(LEASE_HANDOFF_ENV)
+        if self._initialized and (handoff is not None or self._lease_execution_lock is not None):
+            lock = self._lease_execution_lock
+            if lock is None or not await asyncio.to_thread(lock.validate_handoff):
+                raise AgentError("Managed AVD execution lock is no longer admitted.")
+            return True
+        if handoff is None:
+            return await self._init_device(api_key)
+        servers = self._config.servers
+        serial = self._config.device_id
+        if (
+            not serial
+            or self._config.device_platform != DevicePlatform.ANDROID
+            or (servers.adb_host, servers.adb_port) != ("127.0.0.1", 5037)
+            or os.getenv("ARTEMIS_CLOUD_MODE") == "1"
+            or os.getenv("ARTEMIS_CHAT_SESSION_ID")
+        ):
+            raise AgentError(
+                "Managed AVD handoff requires an explicit serial and shared local ADB."
+            )
+        lock = DeviceExecutionLock(
+            serial,
+            lock_scope="tcp:127.0.0.1:5037",
+            concurrency_mode=self._config.concurrency_mode,
+            max_concurrency=self._config.max_concurrency,
+            session_id=self._session_id,
+        )
+        acquiring = asyncio.create_task(asyncio.to_thread(lock.acquire, blocking=False))
 
+        def release_abandoned(acquisition: asyncio.Task[None]) -> None:
+            lock.release()
+            error = None if acquisition.cancelled() else acquisition.exception()
+            if error is not None:
+                logger.warning(f"Abandoned AVD lock acquisition failed: {type(error).__name__}")
+
+        initialized = False
+        try:
+            await asyncio.shield(acquiring)
+            self._lease_execution_lock = lock
+            initialized = await self._init_device(api_key)
+            return initialized
+        finally:
+            if not initialized:
+                if self._lease_execution_lock is lock:
+                    self._lease_execution_lock = None
+                if acquiring.done():
+                    lock.release()
+                else:
+                    acquiring.add_done_callback(release_abandoned)
+                    await asyncio.wait({acquiring})
+
+    async def _init_device(self, api_key: str | None):
         if os.environ.get("ARTEMIS_CLOUD_MODE") != "1" and not EndpointTransport.adb_binary():
             raise ExecutableNotFoundError("adb")
 
@@ -544,12 +596,17 @@ class Agent(AgentBase):
         if not self._initialized and not force:
             return
 
-        if self._ui_adb_client is not None:
-            await asyncio.to_thread(self._ui_adb_client.disconnect)
-        self._initialized = False
-        device_policy.finish_run(self._device_policy, self._policy_receipt_dir)
-        self._device_policy = None
-        logger.info("✅ Artemis agent stopped.")
+        try:
+            if self._ui_adb_client is not None:
+                await asyncio.to_thread(self._ui_adb_client.disconnect)
+            self._initialized = False
+            device_policy.finish_run(self._device_policy, self._policy_receipt_dir)
+            self._device_policy = None
+            logger.info("✅ Artemis agent stopped.")
+        finally:
+            if self._lease_execution_lock is not None:
+                self._lease_execution_lock.release()
+                self._lease_execution_lock = None
 
     async def _ensure_device_unlocked(self) -> None:
         """Reject secure keyguard instead of allowing an agent to guess credentials."""

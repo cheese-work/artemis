@@ -118,3 +118,20 @@ class ManagedRuns:
             return observed == {k: v for k, v in binding.items() if k != "run_id"}
         except (OSError, ValueError, TypeError, KeyError, IndexError):
             return False
+
+    def execution_peer(self, binding, pid):
+        """Return the kernel peer identity only while it belongs to this live run."""
+        if type(pid) is not int or pid <= 1 or not self.alive(binding):
+            raise ValueError("managed execution peer unavailable")
+        peer = process_identity(pid)
+        ancestor = pid
+        for _ in range(128):
+            if ancestor == binding["pid"]:
+                if self.alive(binding) and process_identity(pid) == peer:
+                    return peer
+                break
+            if ancestor <= 1:
+                break
+            stat_fields = Path(f"/proc/{ancestor}/stat").read_text().rsplit(")", 1)[1].split()
+            ancestor = int(stat_fields[1])
+        raise ValueError("execution peer is not in the managed run")
