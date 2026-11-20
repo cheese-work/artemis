@@ -14,6 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
+from apps.admin_console.core import config
 from apps.admin_console.core.access_control import (
     AccessIdentity,
     AdminAPIError,
@@ -164,13 +165,14 @@ def note_principal(identity: AccessIdentity) -> str:
 
 def require_note_write(principal_id: str) -> None:
     """Shared per-caller budget for annotations and the forthcoming comment API."""
-    if not host_registry.allow(f"notes:{principal_id}", 30, 60):
+    window = config.NOTE_WRITE_WINDOW_SECONDS
+    if not host_registry.allow(f"notes:{principal_id}", config.NOTE_WRITE_LIMIT, window):
         raise AdminAPIError(
             429,
             "Too many note writes in one minute.",
             "rate_limited",
             "Wait a minute before writing another note.",
-            retry_after=60,
+            retry_after=window,
             docs_url=f"{notes.DOCS}#rate_limited",
         )
 

@@ -63,6 +63,13 @@ CREATE TABLE IF NOT EXISTS device_events (
 )""",
         "CREATE INDEX IF NOT EXISTS idx_device_events_device_ts ON device_events (device_id, ts)",
     ),
+    (
+        """
+CREATE TABLE IF NOT EXISTS device_reconciler_checkpoint (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    last_alive_at REAL NOT NULL
+)""",
+    ),
 )
 
 

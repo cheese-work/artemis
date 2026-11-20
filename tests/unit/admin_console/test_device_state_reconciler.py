@@ -3,12 +3,15 @@
 Contract: docs/device-identity.md ("Device state"), docs/board-operations.md (config keys).
 """
 
+from datetime import datetime
 import json
 import sqlite3
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from artemis.data_engine.storage import StorageManager
+from apps.admin_console.database.repositories.device_event_repository import DeviceEventRepository
 
 DEVICE = "dev_1"
 USB = "con_usb"
@@ -42,9 +45,6 @@ def clock():
 def make(db, clock):
     # Imports stay inside the factory so a missing module fails each test, not collection.
     def build(**kwargs):
-        from apps.admin_console.database.repositories.device_event_repository import (
-            DeviceEventRepository,
-        )
         from apps.admin_console.services.device_reconciler import DeviceReconciler
 
         return DeviceReconciler(DeviceEventRepository(db), clock=clock, ttl_s=60, **kwargs)
@@ -296,14 +296,18 @@ def test_startup_writes_unknown_for_devices_last_seen_in_a_known_state(db, clock
     _beat(rec)
     clock.advance(5)
     _beat(rec)
+    last_alive = clock.now
     clock.advance(3600)  # server down for an hour
 
     again = make()
     again.start()
 
     assert _states(db) == ["idle", "unknown"]
-    assert _events(db)[-1][1] == clock.now
+    assert _events(db)[-1][1] == last_alive
     assert again.state(DEVICE) == "unknown"
+    assert DeviceEventRepository(db).timeline(DEVICE, last_alive, clock.now) == [
+        ("unknown", last_alive, clock.now)
+    ]
 
 
 def test_startup_twice_writes_one_unknown(db, clock, make):
@@ -317,3 +321,87 @@ def test_startup_twice_writes_one_unknown(db, clock, make):
     make().start()
 
     assert _states(db) == ["idle", "unknown"]
+
+
+def test_startup_without_a_checkpoint_uses_the_last_transition(db, clock, make):
+    events = DeviceEventRepository(db)
+    events.record_state(DEVICE, "idle", clock.now - 3600)
+
+    make().start()
+
+    assert _events(db) == [("idle", clock.now - 3600), ("unknown", clock.now - 3600)]
+
+
+def test_startup_does_not_backdate_unknown_past_a_newer_transition(db, clock, make):
+    rec = make(hysteresis_s=0)
+    _beat(rec)
+    clock.advance(0.5)
+    rec.heartbeat(DEVICE, USB, "running")
+    last_transition = clock.now
+    clock.advance(3600)
+
+    make().start()
+
+    assert _events(db)[-2:] == [("running", last_transition), ("unknown", last_transition)]
+    assert DeviceEventRepository(db).latest_state(DEVICE) == "unknown"
+
+
+def test_tick_compacts_retained_states_without_losing_transitions(db, clock, make, monkeypatch):
+    monkeypatch.setenv("ARTEMIS_DEVICE_EVENT_RETENTION_DAYS", "1")
+    cutoff = clock.now - 86400
+    rows = [
+        ("idle", cutoff - 120),
+        ("running", cutoff - 60),
+        ("running", cutoff + 60),
+        ("unknown", cutoff + 120),
+        ("unknown", cutoff + 180),
+        ("running", cutoff + 240),
+    ]
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO device_events (device_id, kind, payload, ts) VALUES (?, ?, ?, ?)",
+            [(DEVICE, "state_changed", json.dumps({"state": state}), ts) for state, ts in rows],
+        )
+        conn.execute(
+            "INSERT INTO device_events (device_id, kind, ts) VALUES (?, 'merged', ?)",
+            (DEVICE, cutoff - 240),
+        )
+
+    make().tick()
+
+    assert _events(db) == [rows[1], rows[3], rows[5]]
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM device_events WHERE kind = 'merged'"
+        ).fetchone() == (1,)
+    assert DeviceEventRepository(db).timeline(DEVICE, cutoff, clock.now) == [
+        ("running", cutoff, cutoff + 120),
+        ("unknown", cutoff + 120, cutoff + 240),
+        ("running", cutoff + 240, clock.now),
+    ]
+
+
+def test_timeline_distinguishes_both_berlin_fall_back_hours(db, clock, make):
+    berlin = ZoneInfo("Europe/Berlin")
+    first = datetime(2026, 10, 25, 2, 30, tzinfo=berlin, fold=0).timestamp()
+    second = datetime(2026, 10, 25, 2, 30, tzinfo=berlin, fold=1).timestamp()
+    clock.now = first - 60
+    rec = make(hysteresis_s=0)
+    _beat(rec)
+    clock.now = first
+    _beat(rec)
+
+    clock.now = second
+    restarted = make(hysteresis_s=0)
+    restarted.start()
+    _beat(restarted)
+
+    assert _events(db)[1:] == [("unknown", first), ("idle", second)]
+    timeline = DeviceEventRepository(db).timeline(DEVICE, first - 120, second + 60)
+    assert timeline == [
+        ("unknown", first - 120, first - 60),
+        ("idle", first - 60, first),
+        ("unknown", first, second),
+        ("idle", second, second + 60),
+    ]
+    assert second - first == 3600

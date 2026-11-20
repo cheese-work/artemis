@@ -1,0 +1,7 @@
+{
+  "id": "2026-11-19-smartqa-phone-startup-errors",
+  "date": "2026-11-19",
+  "title": "SmartQA explains phone connection errors",
+  "body": "Chat shows why a run could not start when SmartQA cannot verify the phone connection. If the phone is busy, the run keeps its place in line.",
+  "issues": ["CHE-7501"]
+}
