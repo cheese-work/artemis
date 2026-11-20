@@ -1,0 +1,49 @@
+{
+  "receipt_version": 1,
+  "issue": "CHE-5938",
+  "parent_issue": "CHE-5874",
+  "candidate_kind": "testcase",
+  "status": "provisional_not_reviewed_or_executed",
+  "source_candidate": {
+    "runner_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "commit_sha": "581b7589e0e9d50ca7790e9053336ced7d2e0cfe"
+    },
+    "testcase_source": {
+      "path": "qualification/journeys/ap006_che5938_device_proof.md",
+      "digest_sha256": "57383e4f3e92db3d763d7ec45f9775e0b287e73882ec39b77c5c95a797c029cc"
+    },
+    "app_source": {
+      "repository": "https://github.com/tevo-studio/ap006-dramajoy",
+      "commit_sha": "d406c3c17a38d11658724bac760113a0495d7ae1",
+      "base_sha": "4106df6d9b210235293dd7e1767801cd2bef0a7e",
+      "diff_digest_sha256": "7a20608d1f69e80da2a4d58dfe0b31716bb901fe75d235caf2e663668411caea"
+    }
+  },
+  "coverage": [
+    "native test-ad click, external return, one auto-next, unrelated-alias negative control",
+    "displayed-frame three-second close gate, early and late taps",
+    "Explore video screenshot/recording while playing, paused, and transitioning to Home",
+    "Home loaded-row eligibility and a separate pending-request race; lifecycle; Welcome-back suppression",
+    "cold-start config success, offline/slow fallback, bounded splash",
+    "qualification negative control using native Artemis assertion-exit contract"
+  ],
+  "review_contract": {
+    "independent_non_author_reviews_required": 2,
+    "review_same_testcase_digest": true,
+    "admission_owner": "x99-codex-sol",
+    "execution_owner": "x99-codex-luna-avd",
+    "execution_owner_agent_id": "ebedff12-c7f7-4ca5-b6f6-1eb7443576df",
+    "device_execution_admitted": false,
+    "che387_ac3_flake_baseline_required_for_acceptance": true
+  },
+  "authoring_limits": {
+    "device_commands_run": false,
+    "adb_run": false,
+    "artemis_execution_run": false,
+    "runtime_ui_selectors_confirmed": false,
+    "firebase_debugview_access_confirmed": false,
+    "admob_outcome_data_observed": false,
+    "all_behavior_checks": "NOT-RUN"
+  }
+}
