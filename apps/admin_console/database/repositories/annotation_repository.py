@@ -125,19 +125,22 @@ def migrate(db_path: str | Path) -> schema_revisions.RevisionReport:
     return report
 
 
+def invalid_comment_body() -> AdminAPIError:
+    return AdminAPIError(
+        422,
+        "Invalid comment body.",
+        "request_invalid",
+        f"Use 1 to {config.COMMENT_BODY_MAX_CHARS} text characters and no NUL characters.",
+        docs_url=f"{DOCS}#request_invalid",
+    )
+
+
 def add_comment(
     conn: sqlite3.Connection, session_id: str, body: str, author_principal_id: str
 ) -> Comment:
     """Validate and store plain text without modifying it."""
-    max_chars = config.COMMENT_BODY_MAX_CHARS
-    if not 1 <= len(body) <= max_chars or "\x00" in body:
-        raise AdminAPIError(
-            422,
-            "Invalid comment body.",
-            "request_invalid",
-            f"Use 1 to {max_chars} text characters and no NUL characters.",
-            docs_url=f"{DOCS}#request_invalid",
-        )
+    if not 1 <= len(body) <= config.COMMENT_BODY_MAX_CHARS or "\x00" in body:
+        raise invalid_comment_body()
 
     comment = Comment(
         f"cmt_{uuid.uuid4().hex}", session_id, author_principal_id, body, time.time(), None
