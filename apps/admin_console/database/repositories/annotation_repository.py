@@ -1,4 +1,4 @@
-"""Run annotations: the ``notes`` module tables and anchor validation (CHE-1464).
+"""Run annotations and comments: the ``notes`` module tables and validation.
 
 Contract: docs/board-api.md "Notes". An annotation anchors to a stable step id
 or to a recording id plus session-relative milliseconds. A recording without a
@@ -16,6 +16,7 @@ import sqlite3
 import time
 import uuid
 
+from apps.admin_console.core import config
 from apps.admin_console.core.access_control import AdminAPIError
 from artemis.data_engine import schema_revisions
 
@@ -56,6 +57,18 @@ CREATE TABLE evidence_tombstones (
     PRIMARY KEY (session_id, kind, evidence_id)
 )""",
     ),
+    (
+        """
+CREATE TABLE run_comments (
+    comment_id TEXT PRIMARY KEY NOT NULL,
+    session_id TEXT NOT NULL,
+    author_principal_id TEXT NOT NULL,
+    body TEXT NOT NULL CHECK (length(body) > 0 AND instr(body, char(0)) = 0),
+    created_at REAL NOT NULL,
+    edited_at REAL
+)""",
+        "CREATE INDEX idx_run_comments_session ON run_comments (session_id, created_at)",
+    ),
 )
 
 
@@ -87,6 +100,16 @@ class Annotation:
     edited_at: float | None
 
 
+@dataclass(frozen=True, slots=True)
+class Comment:
+    comment_id: str
+    session_id: str
+    author_principal_id: str
+    body: str
+    created_at: float
+    edited_at: float | None
+
+
 def migrate(db_path: str | Path) -> schema_revisions.RevisionReport:
     """Apply pending ``notes`` revisions, then drop notes whose run is gone.
 
@@ -95,11 +118,46 @@ def migrate(db_path: str | Path) -> schema_revisions.RevisionReport:
     """
     report = schema_revisions.apply(db_path, MODULE, REVISIONS)
     with closing(sqlite3.connect(db_path, timeout=30.0)) as conn, conn:
-        for table in ("run_annotations", "evidence_tombstones"):
+        for table in ("run_annotations", "evidence_tombstones", "run_comments"):
             conn.execute(
                 f"DELETE FROM {table} WHERE session_id NOT IN (SELECT session_id FROM sessions)"
             )
     return report
+
+
+def add_comment(
+    conn: sqlite3.Connection, session_id: str, body: str, author_principal_id: str
+) -> Comment:
+    """Validate and store plain text without modifying it."""
+    max_chars = config.COMMENT_BODY_MAX_CHARS
+    if not 1 <= len(body) <= max_chars or "\x00" in body:
+        raise AdminAPIError(
+            422,
+            "Invalid comment body.",
+            "request_invalid",
+            f"Use 1 to {max_chars} text characters and no NUL characters.",
+            docs_url=f"{DOCS}#request_invalid",
+        )
+
+    comment = Comment(
+        f"cmt_{uuid.uuid4().hex}", session_id, author_principal_id, body, time.time(), None
+    )
+    with conn:
+        conn.execute(
+            "INSERT INTO run_comments (comment_id, session_id, author_principal_id, body, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (comment.comment_id, session_id, author_principal_id, body, comment.created_at),
+        )
+    return comment
+
+
+def list_comments(conn: sqlite3.Connection, session_id: str) -> list[Comment]:
+    rows = conn.execute(
+        "SELECT comment_id, session_id, author_principal_id, body, created_at, edited_at "
+        "FROM run_comments WHERE session_id = ? ORDER BY created_at, comment_id",
+        (session_id,),
+    )
+    return [Comment(*row) for row in rows]
 
 
 def anchor_invalid(detail: str) -> AdminAPIError:

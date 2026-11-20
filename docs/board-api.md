@@ -396,10 +396,14 @@ Annotation:
   `{"status": "exact" | "missing" | "expired" | "legacy_uncertain", ...}`. Only
   `exact` returns a media URL. It never snaps to a neighbouring frame.
   `expired` keeps the note text; the UI shows "Recording expired".
-- Body: plain text, 1 to 4000 characters, rendered as text (no HTML or
-  markdown). An empty or longer body answers [`request_invalid`](#request_invalid).
-- Rate limit: 30 notes (annotations plus comments) per caller per minute;
-  beyond that the existing `rate_limited` 429.
+- Body: plain text, rendered as text (no HTML or Markdown). Annotation bodies
+  allow 1 to 4000 characters. Comment bodies allow 1 to
+  `ARTEMIS_COMMENT_BODY_MAX_CHARS` characters (default 4000). Empty, over-limit,
+  and NUL-containing bodies are invalid ([`request_invalid`](#request_invalid)).
+- Rate limit: `ARTEMIS_NOTE_WRITE_LIMIT` writes (default 30), shared by annotations
+  and comments per caller in a rolling 60-second window in each server process.
+  Beyond that, the existing `rate_limited` 429 applies. Set both limits as
+  positive integers in the Admin Console environment before startup.
 - Deep links open through the run route, so an unreadable run shows
   "Run not found or not shared with you".
 - No notifications in v1 (T3 A).

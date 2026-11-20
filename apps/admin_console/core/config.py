@@ -12,11 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Admin Console configuration facade.
+"""Admin Console settings and backward-compatible shared path exports."""
 
-All configuration and path management is centralized in `artemis.config`.
-This module re-exports common constants for full backward compatibility.
-"""
+import os
 
 from artemis.config import (
     DB_PATH,
@@ -30,9 +28,27 @@ from artemis.config import (
     init_ls_address,
 )
 
+
+def _positive_int_setting(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+COMMENT_BODY_MAX_CHARS = _positive_int_setting("ARTEMIS_COMMENT_BODY_MAX_CHARS", 4000)
+NOTE_WRITE_LIMIT = _positive_int_setting("ARTEMIS_NOTE_WRITE_LIMIT", 30)
+NOTE_WRITE_WINDOW_SECONDS = 60
+
 __all__ = [
+    "COMMENT_BODY_MAX_CHARS",
     "DB_PATH",
     "IMAGES_DIR",
+    "NOTE_WRITE_LIMIT",
+    "NOTE_WRITE_WINDOW_SECONDS",
     "PAUSE_FILE",
     "REPLAY_BASE_DIR",
     "TEST_DATA_DIR",
