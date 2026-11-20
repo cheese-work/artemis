@@ -36,7 +36,8 @@
     },
     "testcase_source": {
       "journey_path": "qualification/journeys/che6852_st008_event_map.v1.md",
-      "journey_digest_sha256": "f6783370899fd967e402d7a8b83afaab1f76ea438c7fefb8f37df753c6849a0d",
+      "journey_digest_sha256": "7e0f695aa97c1c7569eb810f69df313552af487fc7c5c5bc03f24d5dc9dc8bc0",
+      "checkout": "Use the cheese-work/artemis checkout for PR #311 at the exact candidate head SHA in the CHE-6843 handoff. From its root, git rev-parse HEAD must equal that SHA before execution.",
       "revision_policy": "A change to journey, receipt, runner, app source, effective lock, override, fixture contract or pinned goal requires a new candidate revision and fresh independent reviews."
     }
   },
@@ -74,7 +75,37 @@
       "metered_spend_possible": true,
       "provider_call_made": false,
       "spend_decision_owner": "Android device squad leader",
-      "open_point": "CHE-6839 permits no spend. A provider call can incur metered spend; the Android device squad leader must resolve this before any provider call."
+      "spend_authorization": {
+        "status": "AUTHORIZED_WITH_CAP",
+        "provider": "openai",
+        "model": "gpt-6-sol",
+        "max_usd_per_run": 5,
+        "max_usd_total": 15
+      },
+      "open_point": "No provider call until both independent reviews approve this exact candidate and the Android device squad records AVD admission."
+    },
+    "command_template": "set -euo pipefail; ARTEMIS_CHECKOUT=\"$(git rev-parse --show-toplevel)\"; test \"$(git rev-parse HEAD)\" = '<candidate head SHA from CHE-6843 handoff>'; EXPECTED_CONFIG_PATH=\"$(realpath \"$ARTEMIS_CHECKOUT\")/qualification/configs/che6852_st008_openai.artemis.jsonc\"; CONFIG_PATH=\"$(realpath \"$ARTEMIS_CHECKOUT/qualification/configs/che6852_st008_openai.artemis.jsonc\")\"; test \"$CONFIG_PATH\" = \"$EXPECTED_CONFIG_PATH\"; test \"$(sha256sum \"$CONFIG_PATH\" | cut -d' ' -f1)\" = '509c567dd553de882f9b5f9d952e7f91a97007bc326ded3fa6336e85f3ea1c6b'; env -u GOOGLE_API_KEY -u GEMINI_API_KEY ARTEMIS_ARTEMIS_JSONC=\"$CONFIG_PATH\" artemis run '<exact goal text>' --standalone --profile pro --assertion-exit --device-serial <leased serial> --locked-app com.palio.ai --disable-planner-validation --verification-level <goal-specific verification level> --session-id <fresh UUIDv4> --run-id <fresh UUIDv4> --traces-path <run evidence dir>/traces",
+    "verification_level_by_goal": {"goal_01":"strict","goal_05":"strict","goal_06_negative_control":"final"},
+    "locked_app_permission_dialogs": "When the device policy is enabled for the leased serial, static source review of artemis/runtime/device_policy.py shows the policy requires the resumed package to equal com.palio.ai and latches LeftTestApp otherwise. The permission-controller dialog has a different resumed package. On an unrestricted serial this lock is not enforced as a foreground lock. Runtime behavior is untested; goal_02 remains do not invoke under this candidate.",
+    "provider_preflight": {
+      "dotenv_google_keys": "stop_if_present",
+      "check_sources": "Before startup, inspect variable names only in the workspace .env, get_env_file() result and GLOBAL_APP_DIR/.env. Stop if any source sets GOOGLE_API_KEY or GEMINI_API_KEY. Do not print or retain values.",
+      "environment": "Run through env -u GOOGLE_API_KEY -u GEMINI_API_KEY as pinned in command_template."
+    },
+    "spend_rule": "Record metered provider spend for each run and cumulative total. Stop before any run that could exceed USD 5 per run or USD 15 total.",
+    "checkout": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "pull_request": 311,
+      "testcase_commit_sha": "Exact published PR #311 head SHA returned on CHE-6843; executor verifies it equals git rev-parse HEAD before execution.",
+      "revision": "Use the cheese-work/artemis PR #311 checkout. Record its exact published testcase commit SHA and verify git rev-parse HEAD matches before execution."
+    },
+    "llm_config": {
+      "path": "qualification/configs/che6852_st008_openai.artemis.jsonc",
+      "absolute_path_rule": "Resolve with realpath from the PR #311 checkout root. Stop unless it equals the expected absolute checkout-root path and its SHA-256 matches.",
+      "sha256": "509c567dd553de882f9b5f9d952e7f91a97007bc326ded3fa6336e85f3ea1c6b",
+      "provider_allowlist": ["openai"],
+      "model": "gpt-6-sol",
+      "planner_validation": "disabled by the pinned command"
     },
     "firebase_debugview": {
       "status": "NOT-RUN",
@@ -88,14 +119,64 @@
     "sdk_publication_or_substitution": false
   },
   "fixture": {
-    "onboarding": "Approved clean first-run app fixture; capture visible UI state at every mapped step. Preserve pre-existing device data.",
-    "permission": "Separate notification and microphone granted, denied, unavailable, suppressed and overlap scenarios; observe real OS dialog visibility. Do not issue a second request for telemetry.",
-    "speaking": "Use an admitted deterministic session fixture; record accepted starts, ready results, terminal errors, recoveries, cancellations and retries as distinct outcomes.",
-    "flash_cards": "Use a deterministic nonempty deck, empty deck and load-failure fixture; distinguish direct deck entry from shared intro-to-deck session.",
-    "ads": "Use controlled display callbacks and confirm actual impression. Preload, failure, suppression and hidden route are not impressions.",
-    "paywall": "Use loaded real weekly/yearly store offers and preserve source. No fabricated product IDs or purchase.",
-    "reset": "Use only the approved app-level clean fixture for first-run cases. Return to each focused scenario through visible UI and record entry state. Do not broad-reset shared device state.",
-    "synchronization": "Visible UI plus timestamped FA/FA-SVC capture. Event assertion requires exact event, allowed parameters, count and ordering in the complete observation window."
+    "onboarding": {"status":"RUNNABLE","locale":"en","fixture":"Pinned app-data reset, POST_NOTIFICATIONS grant from reset.launch_permission, and synthetic name Artemis QA. The same clean Welcome-screen fixture supports the separate goal_06 negative control."},
+    "permission": "Do not invoke goal_02. Permission prompt behavior is untested on an unrestricted serial and blocked when device policy enforces locked-app foreground checks. Do not infer displayed prompt from focus loss or a pending native call.",
+    "speaking": {"status":"NOT-RUN","reason":"No admitted deterministic speaking session/backend fixture is pinned; this includes event_20 through event_23."},
+    "flash_cards": {"status":"NOT-RUN","reason":"No deterministic nonempty, empty or load-failure deck fixture is pinned; this includes event_24 through event_27."},
+    "ads": {"status":"NOT-RUN","reason":"No controlled display-callback fixture or verified transitive SDK emission fixture is pinned; this includes event_17, event_18 and event_19."},
+    "paywall": {"status":"NOT-RUN","reason":"No verified real weekly/yearly store offers or authorized sandbox fixture is pinned; this includes event_28 through event_32. Never fabricate product IDs or purchase."},
+    "login": {"status":"NOT-RUN","account":"No authorized nonpersonal Google test account is available; do not sign in. Home after login redirect and authentication-family removal checks remain NOT-RUN (event_11, removal_06)."},
+    "reset": {
+      "app_data": "adb -s <leased serial> shell pm clear com.palio.ai",
+      "launch_permission": {
+        "permission": "android.permission.POST_NOTIFICATIONS",
+        "snapshot": "adb -s <leased serial> shell pm check-permission com.palio.ai android.permission.POST_NOTIFICATIONS; adb -s <leased serial> shell pm get-permission-flags com.palio.ai android.permission.POST_NOTIFICATIONS",
+        "grant": "adb -s <leased serial> shell pm grant com.palio.ai android.permission.POST_NOTIFICATIONS",
+        "restore": "Restore the snapshotted grant state and permission flags after each non-permission goal."
+      },
+      "commands": [
+        "adb -s <leased serial> shell pm check-permission com.palio.ai android.permission.POST_NOTIFICATIONS; adb -s <leased serial> shell pm get-permission-flags com.palio.ai android.permission.POST_NOTIFICATIONS",
+        "adb -s <leased serial> shell pm clear com.palio.ai",
+        "adb -s <leased serial> shell pm grant com.palio.ai android.permission.POST_NOTIFICATIONS",
+        "Restore the snapshotted grant state and permission flags after each non-permission goal."
+      ],
+      "permissions": [
+        "adb -s <leased serial> shell pm revoke com.palio.ai android.permission.POST_NOTIFICATIONS",
+        "adb -s <leased serial> shell pm revoke com.palio.ai android.permission.RECORD_AUDIO",
+        "adb -s <leased serial> shell pm clear-permission-flags com.palio.ai android.permission.POST_NOTIFICATIONS user-set user-fixed",
+        "adb -s <leased serial> shell pm clear-permission-flags com.palio.ai android.permission.RECORD_AUDIO user-set user-fixed"
+      ],
+      "scope": "Run only after admission, both reviews and lease. Target the leased serial. Never reset shared device state. Snapshot and restore permission state on the same serial."
+    },
+    "fa_debug": {
+      "setup": [
+        "adb -s <leased serial> shell setprop debug.firebase.analytics.app com.palio.ai",
+        "adb -s <leased serial> shell setprop log.tag.FA VERBOSE",
+        "adb -s <leased serial> shell setprop log.tag.FA-SVC VERBOSE",
+        "adb -s <leased serial> logcat -v threadtime -s FA FA-SVC"
+      ],
+      "restore": "Before setup, capture getprop debug.firebase.analytics.app, getprop log.tag.FA, and getprop log.tag.FA-SVC. Restore each property to its exact captured value; do not assume .none. Disable the capture process after the observation window."
+    },
+    "synchronization": "Visible UI plus timestamped FA/FA-SVC capture saved as <run evidence dir>/fa-fa-svc-threadtime.log. Goal_05 uses the same complete goal_01 capture; run qualification/fa_log_counter.py against that exact file and receipt. Keep its SHA-256-linked counter ledger beside the native summary. The ledger preserves source line order, origin, event name and raw parameter bundle.",
+    "log_counter": {
+      "path": "qualification/fa_log_counter.py",
+      "sha256": "dca344a274a5e6dfb7ba3f5466af7d51908d8e854cbaf8caae9adf9b06ab9358",
+      "input": "<run evidence dir>/fa-fa-svc-threadtime.log from goal_01",
+      "command": "python qualification/fa_log_counter.py --log <run evidence dir>/fa-fa-svc-threadtime.log --receipt qualification/candidates/che6852_st008_event_map.v1.json --output <run evidence dir>/fa-count-ledger.json",
+      "output": "One row per assertion_id with count and observations in source line order; each observation retains origin, event name and raw parameter bundle, and the ledger carries the input log SHA-256. Removal families count only origin=app.",
+      "malformed_event_rule": "Stop and mark affected rows NOT-RUN if any FA-SVC Logging event line cannot be parsed."
+    },
+    "removal_flows": {
+      "removal_02": {"goal":"goal_01","flow":"Pinned clean first-run onboarding from reset through login redirect; inspect the complete goal_01 capture."},
+      "removal_03": {"goal":"goal_05","flow":"Pinned clean first-run onboarding from reset through login redirect; count on the exact goal_01 capture using log_counter.command."},
+      "removal_04": {"goal":"goal_01","flow":"Pinned clean first-run onboarding from reset through login redirect; inspect the complete goal_01 capture."}
+    }
+  },
+  "result_rule": {
+    "observed_requires": "A row is OBSERVED only if the native ledger contains a passed item naming its assertion_id and reporting checked count and parameters, and the deterministic host counter ledger for the same capture has the matching assertion_id, count, raw parameters and source order.",
+    "exit_zero_sets_no_row_status": true,
+    "exit_zero_rule": "Exit 0 alone sets no event or removal row status. Missing or unchecked ledger items remain NOT-RUN with unknown count.",
+    "removed_family_filter": "Count only custom events with origin=app in the FA-SVC log; automatic Firebase events do not count for removal families."
   },
   "evidence_contract": {
     "capture": [
@@ -125,35 +206,55 @@
     "required_if_class_unqualified": true,
     "positive_pass": "Clean representative testcase pass with complete artifacts.",
     "clean_rerun": "Repeat from the clean reset contract; preserve independent result and artifacts.",
-    "negative_control": "Deliberately fail one assertion; native completed assertion exit must be 1 with the failure evidence retained.",
+    "negative_control": {
+      "assertion_id": "negative_control_title",
+      "locale": "en",
+      "screen": "Welcome onboarding screen",
+      "text_source": "lib/presentation/l10n/app_en.arb key onboardingWelcomeMessage",
+      "actual_value": "Hello! I'm Palios, your personal AI tutor. I will help you learn a new language and communicate fluently.",
+      "wrong_value": "Palios — WRONG TITLE",
+      "expected_exit": 1,
+      "proof": "complete native summary has exactly this failed item, the observed title is different, marker ARTEMIS_ASSERTION_EXIT=1 is present, and process exit is 1"
+    },
     "cleanup_release": "Preserve evidence, stop only run-owned processes, restore only changed settings, and obtain Android leader verification of device/lease release.",
     "missing_or_uncertain_evidence": "NOT-RUN or inconclusive; never qualify. Uncertain cleanup keeps target unavailable with named recovery owner."
   },
   "goals": [
     {
       "id": "goal_01",
-      "text": "Run the CHE-6852 reviewed ST008 analytics testcase exactly as pinned. Use the clean first-run fixture, observe each visible onboarding step and Home, verify locale on entry, and classify fullscreen native only as deferred. Capture privacy-safe timestamped FA/FA-SVC evidence and fail closed on missing screens, wrong event names, parameters, counts, ordering or incomplete logs.",
-      "sha256": "9a10a9af32933aef934baa7406b72c812403599c5c1aa5a287efdf813dc0dd38"
+      "assertion_ids": ["event_01","event_02","event_03","event_04","event_05","event_06","event_07","event_08","event_09","removal_02","removal_04"],
+      "text": "Use the pinned clean first-run fixture: reset com.palio.ai, grant POST_NOTIFICATIONS before launch, set locale en, and enter only synthetic name Artemis QA. Stop at the login redirect without signing in. Capture the complete timestamped FA/FA-SVC window and visible states. Assert event_01=splash_scr_view, event_02=obd_1_scr_view, event_03=obd_2_scr_view, event_04=obd_3_scr_view, event_05=lfo_1_scr_view, event_06=lfo_2_scr_view with language=en, event_07=obd_6_scr_view, event_08=obd_7_scr_view, event_09=obd_8_scr_view, exactly once per visible trigger and in observed step order with each row's expected parameters. Assert removal_02=splash_bootstrap_started|splash_bootstrap_completed|splash_bootstrap_failed and removal_04=language_selected|onboarding_started|onboarding_next_tapped|onboarding_completed each have count 0 in the complete captured window. Missing UI or incomplete capture is not PASS.",
+      "sha256": "e868bb4e90e2c0fd5cafa41eff7e4bc3c5ec81587de84da32f5b966c600d14ae"
     },
     {
       "id": "goal_02",
-      "text": "Exercise notification and microphone permissions in isolated scenarios and overlapping notification/microphone requests. Distinguish an actually displayed OS dialog from focus loss, pending native calls, bridge errors, existing grants, unsupported OS, suppressed requests and unavailable status. Verify safe speaking failure, no false notification telemetry and no extra prompt. Capture privacy-safe UI and complete timestamped FA/FA-SVC logs; fail closed on ambiguity.",
-      "sha256": "63e60a862febe4f3254706d370f20660ee767fc34c1beb1c08c15c13686b46ce"
+      "assertion_ids": [],
+      "text": "DO NOT INVOKE. event_12 through event_16 and removal_05 are NOT-RUN because permission-controller dialog behavior is not verified under the pinned locked-app policy.",
+      "sha256": "7517c604d6c895f04e19ab654e42d121e15e1cd8f8dba4a0bbe2ed62d4b819d2"
     },
     {
       "id": "goal_03",
-      "text": "Exercise speaking and flash-card accepted starts, real result-ready returns, terminal failures, recovery, empty/load failure, completion and explicit retry. Reconcile counts to real accepted attempts and real returns. Do not count cancellation, timers alone, empty decks, stale callbacks, recovered interruptions or duplicate callbacks as completion. Preserve assertion ledger and privacy-safe evidence; fail closed on count mismatch.",
-      "sha256": "6f11582353b14f3e852928f45beb8bf1d311edb87a7712334b04528625f9d265"
+      "assertion_ids": [],
+      "text": "DO NOT INVOKE. event_20 through event_27 and removal_09 are NOT-RUN because no deterministic speaking-session or flash-card deck fixture is pinned.",
+      "sha256": "f660fb0a60d2a3b914a8e8178bfa7544cf97ad67f82a369216cb7218ec0287ac"
     },
     {
       "id": "goal_04",
-      "text": "Exercise only deterministic ad and paywall paths. Confirm actual impressions, original source, real loaded store product IDs, accepted clicks and actual transitive SDK emissions. Keep Firebase DebugView and store-sandbox purchase NOT-RUN until their own authorized fixtures and access exist. Never fabricate an impression or purchase and never spend money.",
-      "sha256": "da6fc291bd1d2700e24d1483730efa0b4e1f3a6e4f7d05975ed564f507e6e9c9"
+      "assertion_ids": [],
+      "text": "DO NOT INVOKE. event_17 through event_19, event_28 through event_32, removal_10 and removal_11 are NOT-RUN because verified ad callbacks, real store offers, and authorized sandbox fixtures are not pinned. Never fabricate impressions or purchases or disable automatic collection.",
+      "sha256": "df416f3e4c2a4d4c1030397b155cebd05bd351cd1fc8df5a4fed6ac0f12eb1d1"
     },
     {
       "id": "goal_05",
-      "text": "Check every exact removed custom event family against complete actual SDK emission windows while preserving automatic Firebase collection. If the AVD class is unqualified, execute a clean representative pass, a clean rerun and a deliberate failed assertion with native exit 1. Preserve artifacts and have the Android leader verify cleanup and release. Missing logs or incomplete evidence are not an absence pass.",
-      "sha256": "9f624b5fad20cfb99e68023c9705d7b1de60741e2b330abdace3ca9647771ab8"
+      "assertion_ids": ["removal_03"],
+      "text": "Bind goal_05 to the complete FA/FA-SVC log captured during goal_01; do not launch a second fixture. Run the pinned qualification/fa_log_counter.py command from the receipt against <run evidence dir>/fa-fa-svc-threadtime.log. Assert removal_03=navigation_route_changed|screen_view has count 0 in that capture. Count only custom events with origin=app in FA-SVC; automatic Firebase events do not count for removal families. Preserve automatic Firebase collection. The counter output must include the receipt assertion_id, count, source line order, event origin, event name, raw parameters, and source-log SHA-256.",
+      "sha256": "627ab864288f29f78b02435081dd4e720e6e7386933dc8dfb4f6e33222c5984d"
+    },
+    {
+      "id": "goal_06_negative_control",
+      "assertion_ids": ["negative_control_title"],
+      "text": "Run the pinned clean onboarding fixture as a separate qualification attempt with locale en and --verification-level final. On the Welcome onboarding screen, assert assertion_id=negative_control_title: visible text from lib/presentation/l10n/app_en.arb key onboardingWelcomeMessage is exactly `Palios — WRONG TITLE`; the real value is `Hello! I'm Palios, your personal AI tutor. I will help you learn a new language and communicate fluently.` The native summary must contain exactly one failed item for this assertion, stdout must contain ARTEMIS_ASSERTION_EXIT=1, and process exit must equal 1. Keep this expected failure separate from positive runs; exit 0, exit 2, a missing marker, incomplete evidence or another failed item invalidates the control.",
+      "sha256": "f4301df106dfc715878e7666b3b6d7524ad87a4dda0a4caecbbe6b393b9fe1bc"
     }
   ],
   "coverage": {

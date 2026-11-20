@@ -1,0 +1,32 @@
+{
+  "planner": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "summarizer": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "operator": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "operator_summarizer": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "log_reader_sub_agent": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "log_analyzer": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "diagnoser": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "checker": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "planner_avatar": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "history_analyzer_expert": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "diagnoser_expert": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "explorer": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "validator_pixel_safety_net": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "planner_validation": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+  "utils": {
+    "outputter": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+    "hopper": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+    "video_analyzer": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}},
+    "object_detector": {"provider":"openai","model":"gpt-6-sol","fallback":{"provider":"openai","model":"gpt-6-sol"}}
+  },
+  "agent": {
+    "flash": {"max_turns":0,"explorer_mode":"pro","step_summarizer":{"enabled":true,"model":"gpt-6-sol","prune_history_xml":true}},
+    "pro": {"explorer":{"mode":"pro"},"planner_validation":{"enabled":true},"committee":{"enabled":false,"debate_rounds":2},"checker":{"enabled":true,"midway_checks":false,"final_check":true,"max_iterations":20,"final_check_max_attempts":3,"checkpoint_max_repairs":2,"max_concurrent_checkpoints":3,"checkpoint_timeout":180.0,"settlement_timeout":120.0,"assert_failure_policy":"continue","device_probes":true},"video_analyzer":{"enabled":true,"enable_ledger":true}},
+    "memory": {"runtime":{"max_concurrency":2,"retry_limit":3,"flush_timeout_s":30},"transcript":{"enabled":true,"context_budget_tokens":80000,"start_ratio":0.35,"soft_ratio":0.7,"hard_ratio":0.9,"min_active_steps":5,"image_scrub_depth":3,"image_scrub_depth_relaxed":6,"pending_grace_steps":3,"xml_scrub_depth":1,"similarity_hint":true,"similarity_max_distance":5},"chunking":{"max_steps":12,"min_steps":3,"target_source_tokens":2000,"model":"gpt-6-sol","max_chunks":8},"recall":{"enabled":true,"max_results":5,"max_text_tokens":2000,"screen_scan_steps":150},"replay":{"max_steps":5,"max_tokens":12000}},
+    "video_analyzer": {"enabled":true,"enable_ledger":true},
+    "outputter": {"enabled":true,"force_synthesis":false},
+    "explorer": {"default_version":"flash"},
+    "explorer_versions": {},
+    "denylisted_tools": {"explorer": []}
+  }
+}
