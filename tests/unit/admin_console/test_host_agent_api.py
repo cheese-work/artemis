@@ -14,6 +14,8 @@ import socket
 import sqlite3
 import struct
 import time
+from contextlib import closing
+from typing import cast
 from unittest.mock import patch
 
 from cryptography.hazmat.primitives import serialization
@@ -25,6 +27,7 @@ import pytest_asyncio
 import uvicorn
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosedError
+from starlette.types import ExceptionHandler
 from starlette.websockets import WebSocketDisconnect
 
 from apps.admin_console.core import agent_auth
@@ -34,6 +37,10 @@ from apps.admin_console.server import proxy_aware_app
 from apps.admin_console.services import host_registry as hr
 from apps.admin_console.services.host_registry import host_registry
 from apps.admin_console.services.host_tunnel import HostTunnels
+from apps.admin_console.services.recording_assignments import (
+    RECORDING_CAP_SECONDS,
+    RecordingAssignmentStore,
+)
 from artemis.runtime.host_endpoints import HostEndpointRegistry
 from artemis.runtime.host_protocol import CONTRACT
 
@@ -210,7 +217,7 @@ def _hello(client, key, host_id, *, protocol=None, ts=None, nonce=None, audience
 
 def _guarded_app() -> FastAPI:
     app = FastAPI()
-    app.add_exception_handler(AdminAPIError, admin_api_error_handler)
+    app.add_exception_handler(AdminAPIError, cast(ExceptionHandler, admin_api_error_handler))
     return app
 
 
@@ -220,6 +227,190 @@ def _handshake(client, key, host_id, **kw):
     ws = context.__enter__()
     ws.send_json(_hello(client, key, host_id, **kw))
     return context, ws, ws.receive_json()
+
+
+@pytest.fixture
+def recording_store(admin):
+    return RecordingAssignmentStore(host_registry.db_path, clock=host_registry.clock)
+
+
+def test_recording_sync_empty_snapshot(admin):
+    key, host_id = _enrolled(admin)
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, host_id))
+        connected = ws.receive_json()
+        assert connected["type"] == "connected"
+        assert connected["recordings"] == []
+
+
+def test_recording_sync_snapshot_filters_and_orders_rows(admin, clock, recording_store):
+    key, host_id = _enrolled(admin)
+    recording_store.assign(host_id, "expired", 1)
+    stopped = recording_store.assign(host_id, "pending-stop", 2)
+    assert recording_store.request_stop(stopped.session_id)
+    acked = recording_store.assign(host_id, "acked-stop", 3)
+    assert recording_store.request_stop(acked.session_id)
+    assert recording_store.acknowledge(host_id, acked.recording_id, 2)
+    clock["now"] += RECORDING_CAP_SECONDS + 1
+    active = recording_store.assign(host_id, "active", 4)
+
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, host_id))
+        assert ws.receive_json()["recordings"] == [
+            {
+                "recording_id": stopped.recording_id,
+                "session_id": stopped.session_id,
+                "run_generation": 2,
+                "desired_state": "stop",
+                "revision": 2,
+                "deadline": stopped.deadline,
+            },
+            {
+                "recording_id": active.recording_id,
+                "session_id": active.session_id,
+                "run_generation": 4,
+                "desired_state": "record",
+                "revision": 1,
+                "deadline": active.deadline,
+            },
+        ]
+
+
+def test_recording_sync_snapshot_is_host_scoped(admin, recording_store):
+    key, host_id = _enrolled(admin)
+    _, other_host = _enrolled(admin)
+    own = recording_store.assign(host_id, "own", 1)
+    recording_store.assign(other_host, "other", 1)
+
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, host_id))
+        assert [row["recording_id"] for row in ws.receive_json()["recordings"]] == [
+            own.recording_id
+        ]
+
+
+def test_recording_sync_ack_clears_stop_on_reconnect(admin, recording_store, caplog):
+    caplog.set_level("INFO", logger=agent_router.__name__)
+    key, host_id = _enrolled(admin)
+    row = recording_store.assign(host_id, "pending-stop", 1)
+    assert recording_store.request_stop(row.session_id)
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, host_id))
+        assert ws.receive_json()["recordings"][0]["revision"] == 2
+        ack = {"type": "recording_ack", "recording_id": row.recording_id, "revision": 2}
+        ws.send_json(ack)
+        ws.send_json(ack)
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "pong"}
+
+    event = f"event=recording_acked host_id={host_id} recording_id={row.recording_id} revision=2"
+    assert [message.removeprefix("session_id=- ") for message in caplog.messages].count(event) == 1
+    db_path = host_registry.db_path
+    assert db_path is not None
+    with closing(sqlite3.connect(db_path)) as connection:
+        assert connection.execute(
+            "SELECT acked_revision FROM host_recording_assignments WHERE recording_id = ?",
+            (row.recording_id,),
+        ).fetchone() == (2,)
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, host_id))
+        assert ws.receive_json()["recordings"] == []
+
+
+def test_recording_sync_ack_uses_authenticated_host(admin, recording_store):
+    key, host_id = _enrolled(admin)
+    _, other_host = _enrolled(admin)
+    row = recording_store.assign(other_host, "other", 1)
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, host_id))
+        ws.receive_json()
+        ws.send_json(
+            {
+                "type": "recording_ack",
+                "host_id": other_host,
+                "recording_id": row.recording_id,
+                "revision": 1,
+            }
+        )
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "pong"}
+
+    assert recording_store.reconcile(other_host, host_registry.clock()) == [row]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("revision", None),
+        ("revision", True),
+        ("revision", "2"),
+        ("revision", 2.0),
+        ("revision", 0),
+        ("recording_id", None),
+        ("recording_id", "x" * 65),
+        ("recording_id", ["untrusted-log-canary"]),
+    ],
+)
+def test_recording_sync_ignores_malformed_ack(admin, recording_store, caplog, field, value):
+    caplog.set_level("INFO", logger=agent_router.__name__)
+    key, host_id = _enrolled(admin)
+    row = recording_store.assign(host_id, "pending-stop", 1)
+    assert recording_store.request_stop(row.session_id)
+    ack = {"type": "recording_ack", "recording_id": row.recording_id, "revision": 2}
+    if value is None:
+        del ack[field]
+    else:
+        ack[field] = value
+    with (
+        patch.object(RecordingAssignmentStore, "acknowledge") as acknowledge,
+        admin.websocket_connect("/api/agent/connect", headers=HOST) as ws,
+    ):
+        ws.send_json(_hello(admin, key, host_id))
+        ws.receive_json()
+        ws.send_json(ack)
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "pong"}
+        acknowledge.assert_not_called()
+
+    assert recording_store.reconcile(host_id, host_registry.clock())[0].acked_revision == 0
+    ignored = [
+        event.removeprefix("session_id=- ")
+        for event in caplog.messages
+        if "event=recording_ack_ignored" in event
+    ]
+    assert ignored == [f"event=recording_ack_ignored host_id={host_id} reason=invalid_{field}"]
+    assert row.recording_id not in ignored[0]
+
+
+@pytest.mark.parametrize("fields", [{"revision": 1 << 63}, {"recording_id": "\ud800"}])
+def test_recording_sync_unmatchable_ack_keeps_connection_open(admin, recording_store, fields):
+    key, host_id = _enrolled(admin)
+    row = recording_store.assign(host_id, "active", 1)
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, host_id))
+        ws.receive_json()
+        ack = {"type": "recording_ack", "recording_id": row.recording_id, "revision": 1, **fields}
+        ws.send_text(json.dumps(ack))
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "pong"}
+
+    assert recording_store.reconcile(host_id, host_registry.clock()) == [row]
+
+
+def test_recording_sync_snapshot_caps_rows_at_64_oldest(admin, clock, recording_store):
+    key, host_id = _enrolled(admin)
+    recording_ids = []
+    for index in range(65):
+        row = recording_store.assign(host_id, f"session-{index}", index)
+        recording_ids.append(row.recording_id)
+        clock["now"] += 1
+
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, host_id))
+        frame = ws.receive_text()
+        assert len(frame.encode("utf-8")) <= CONTRACT.max_frame
+        snapshot = json.loads(frame)["recordings"]
+        assert [row["recording_id"] for row in snapshot] == recording_ids[:64]
 
 
 @pytest_asyncio.fixture
@@ -341,7 +532,7 @@ async def test_agent_rejects_oversize_host_message_with_bridge_transport_cap(
         }
         with pytest.raises(ConnectionClosedError) as closed:
             await asyncio.wait_for(ws.recv(), STALL_BOUND)
-        assert closed.value.rcvd.code == 4400
+        assert closed.value.rcvd is not None and closed.value.rcvd.code == 4400
     await asyncio.wait_for(lost.wait(), STALL_BOUND)
     assert decode.call_count == (1 if isinstance(payload, bytes) else 2)
     assert frame_decode.call_count == (1 if isinstance(payload, bytes) else 0)
@@ -411,7 +602,7 @@ async def test_uvicorn_bounds_messages_at_the_bridge_limit(admin, wire_server):
         await ws.send(bytes(MAX_ADB_PACKET_BYTES + 1))
         with pytest.raises(ConnectionClosedError) as closed:
             await asyncio.wait_for(ws.recv(), STALL_BOUND)
-        assert closed.value.rcvd.code == 1009
+        assert closed.value.rcvd is not None and closed.value.rcvd.code == 1009
     await asyncio.wait_for(lost.wait(), STALL_BOUND)
 
 

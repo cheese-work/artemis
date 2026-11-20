@@ -122,6 +122,8 @@ class RecordingAssignmentStore:
 
     def acknowledge(self, host_id: str, recording_id: str, revision: int) -> bool:
         """Return whether the matching host advanced the acknowledged revision."""
+        if revision >= 1 << 63 or not recording_id.isascii():
+            return False
         with self._db() as conn:
             cursor = conn.execute(
                 """
