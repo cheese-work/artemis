@@ -666,6 +666,7 @@ _PUBLIC_GET_PATHS = {
     "/api/runs/{session_id}/annotations",
     "/api/runs/{session_id}/annotations/{annotation_id}",
     "/api/runs/{session_id}/annotations/{annotation_id}/evidence",
+    "/api/runs/{session_id}/comments",
     "/api/system/retention",
     "/api/system/storage",
     "/api/hosts",
@@ -802,6 +803,7 @@ _PUBLIC_MUTATING_PATHS = {
     "/api/tasks/{session_id}/cancel-queued",
     "/api/resume",
     "/api/runs/{session_id}/annotations",
+    "/api/runs/{session_id}/comments",
 }
 
 

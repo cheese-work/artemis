@@ -44,7 +44,7 @@ Identity headers are trusted only behind the authenticating proxy; see
 | `PATCH, DELETE /api/runs/{session_id}/annotations/{annotation_id}` | Edit, resolve or delete an annotation. |
 | `GET /api/runs/{session_id}/annotations/{annotation_id}/evidence` | Resolve an annotation anchor. |
 | `GET, POST /api/runs/{session_id}/comments` | List or add comments. |
-| `PATCH, DELETE /api/runs/{session_id}/comments/{comment_id}` | Edit or delete a comment. |
+| `PATCH, DELETE /api/runs/{session_id}/comments/{comment_id}` | Not yet implemented (CHE-7704). |
 | `GET /api/stream` | Existing SSE stream; carries the board events below. |
 
 Every route is classified in the access-control and preview route registries
@@ -440,13 +440,47 @@ they use only the preview's isolated database and media. Mutation calls the
 `routers.run_annotations.annotation_changed` hook after commit. The hook is a
 no-op until a visibility-checked SSE registry exists; no notifications or
 `run.annotated` events are emitted yet. The existing stream event set is not
-such a registry. The `require_note_write` hook shares a process-local 30-write
-per-principal, 60-second budget for the forthcoming comment API.
+such a registry. `require_note_write` shares the process-local, per-principal
+write budget with `POST /api/runs/{session_id}/comments` (default 30 writes in
+60 seconds).
+
+### Comment API (CHE-1466)
+
+- `GET /api/runs/{session_id}/comments` returns 200 with `{"comments": [...]}`.
+  Comments are oldest first, with `comment_id` as the tie-breaker.
+- `POST /api/runs/{session_id}/comments` accepts only `{"body": "..."}` and
+  returns 201 with the created comment. The server assigns authorship and
+  returns the body unchanged as plain text.
+
+```json
+{
+  "comment_id": "cmt_8dd9022022ae4beaa916d18bceef25ac",
+  "session_id": "20261008_091200_c0ffee00",
+  "author": "qa@example.com",
+  "author_principal_id": "6ad3e2cb903d409ab390ace7622a9d2d",
+  "body": "Retest passed.",
+  "created_at": "2026-10-08T09:13:00+00:00",
+  "edited_at": null
+}
+```
+
+`author` is the principal's email, or `null` when no email is recorded.
+Timestamps use ISO 8601, and `edited_at` is `null` on creation.
+
+Both routes are public-tier and preview `REAL`, subject to run visibility. An
+unreadable, unknown, deleted, or prefix-only run returns `run_not_visible` 404.
+Anyone who can read the run and has a verified writing identity can add a
+comment; these routes do not return `comment_not_permitted`. In authenticated
+modes a POST without a verified issuer and subject returns `actor_required` 401.
+Invalid JSON or a rejected body returns `request_invalid` 422 with the configured
+character cap in the hint. Exceeding the shared annotation and comment write
+budget returns `rate_limited` 429 with `Retry-After`.
 
 #### notes_not_ready
 
-503 with `Retry-After: 5` if the annotation tables are unavailable. Restart the
-console to apply the additive notes migration. No annotation data is returned.
+503 with `Retry-After: 5` if the annotation tables are unavailable or a comment
+route requires the missing `run_comments` table. Restart the console to apply
+the additive notes migration. No notes are returned.
 
 ## Live updates (SSE)
 

@@ -55,6 +55,11 @@ def test_every_registered_route_is_classified():
     assert pr.unclassified_routes(server.app) == []
 
 
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_run_comment_routes_use_real_preview_handlers(method):
+    assert f"{method} /api/runs/{{session_id}}/comments" in pr.REAL
+
+
 @pytest.mark.parametrize(
     "key",
     [
