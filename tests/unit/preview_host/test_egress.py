@@ -1,3 +1,5 @@
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -176,7 +178,7 @@ def test_proxy_config_is_current_and_requires_a_resolved_registry_connect():
         "acl preview_registry dstdomain -n registry.npmjs.org pypi.org files.pythonhosted.org"
         in lines
     )
-    assert "acl preview_resolved dst ipv4 2000::/3" in lines
+    assert "acl preview_resolved dst 0.0.0.0/0 2000::/3" in lines
     assert [line for line in lines if line.startswith("http_access ")] == [
         "http_access deny !preview_connect",
         "http_access deny !preview_https",
@@ -198,3 +200,69 @@ def test_proxy_binds_only_to_a_scopeless_loopback():
     for address in ("0.0.0.0", "::", "localhost", "::1%eth0", "127.0.0.1\nhttp_port 80"):
         with pytest.raises(ValueError):
             egress.render_proxy_config(address)
+
+
+def test_squid_applies_connect_acl_to_both_pin_families(tmp_path):
+    image = os.environ.get("ARTEMIS_TEST_SQUID_IMAGE")
+    if not image:
+        pytest.skip("set ARTEMIS_TEST_SQUID_IMAGE to a locally available Squid image")
+
+    tmp_path.chmod(0o755)
+    (tmp_path / "egress.hosts").write_text(
+        f"{PUBLIC_IPV4} registry.npmjs.org\n{PUBLIC_IPV6} files.pythonhosted.org\n"
+        "10.0.0.5 pypi.org\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "squid.conf").write_text(
+        egress.render_proxy_config().replace(egress.HOSTS_PIN_PATH, "/fixtures/egress.hosts")
+        + "pid_filename /tmp/squid.pid\ncache_log /tmp/squid.log\naccess_log none\n"
+        "connect_timeout 2 seconds\n",
+        encoding="utf-8",
+    )
+    cases = {
+        "registry.npmjs.org:443": "503",
+        "files.pythonhosted.org:443": "503",
+        "pypi.org:443": "403",
+        "registry.npmjs.org:8443": "403",
+        "example.test:443": "403",
+    }
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--pull=never",
+            "--network=none",
+            "--user=65534:65534",
+            "--cap-drop=ALL",
+            "--mount",
+            f"type=bind,source={tmp_path},target=/fixtures,readonly",
+            "--entrypoint=/bin/bash",
+            image,
+            "-euc",
+            r"""
+            squid -N -f /fixtures/squid.conf >&2 &
+            for attempt in {1..100}; do
+                if (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null; then break; fi
+                sleep .05
+            done
+            for authority in "$@"; do
+                exec 3<>/dev/tcp/127.0.0.1/3128
+                printf 'CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n' "$authority" "$authority" >&3
+                read -r protocol status reason <&3
+                printf '%s %s\n' "$authority" "$status"
+                exec 3>&-
+            done
+            """,
+            "squid-connect",
+            *cases,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        f"{authority} {status}" for authority, status in cases.items()
+    ]

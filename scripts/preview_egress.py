@@ -126,7 +126,7 @@ acl preview_https port {HTTPS_PORT}
 acl preview_registry dstdomain -n {" ".join(ALLOWED_HOSTS)}
 acl preview_denied_ipv4 dst {denied_ipv4}
 acl preview_denied_ipv6 dst {denied_ipv6}
-acl preview_resolved dst ipv4 {IPV6_GLOBAL_UNICAST}
+acl preview_resolved dst 0.0.0.0/0 {IPV6_GLOBAL_UNICAST}
 
 http_access deny !preview_connect
 http_access deny !preview_https
