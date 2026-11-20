@@ -20,12 +20,62 @@ INACTIVE = {
 HOSTED = {("whats-new.yml", "entry")}
 
 
+def _triggers(workflow):
+    return workflow[True] if True in workflow else workflow["on"]
+
+
 def _jobs():
+    """The jobs that run on the X99 pool: every active job except the untrusted merge_group ones."""
     for path in sorted(WORKFLOWS.glob("*.yml")):
         workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        # A merge_group workflow comes from the queue commit and is untrusted: it follows its own
+        # hosted-runner rule (test_merge_group_jobs_never_select_the_self_hosted_pool).
+        if "merge_group" in _triggers(workflow):
+            continue
         for name, job in workflow["jobs"].items():
             if (path.name, name) not in INACTIVE:
                 yield path.name, name, workflow, job
+
+
+def _merge_group_jobs():
+    """Every job of a workflow that GitHub starts from a merge-queue commit."""
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if "merge_group" in _triggers(workflow):
+            for name, job in workflow["jobs"].items():
+                yield path.name, name, workflow, job
+
+
+def test_merge_group_jobs_never_select_the_self_hosted_pool():
+    """GitHub runs a merge_group workflow from the queue commit, which a queued PR can rewrite.
+
+    No owner-name condition authenticates those workflow bytes, so a job they start may only use
+    a GitHub-hosted ephemeral runner, never a self-hosted label (the X99 pool).
+    """
+    jobs = list(_merge_group_jobs())
+    assert [(file, name) for file, name, _w, _j in jobs] == [("pr-ready-queue.yml", "pr-ready")]
+    for file, name, workflow, job in jobs:
+        assert job["runs-on"] == "ubuntu-latest", (file, name, job["runs-on"])
+        assert "self-hosted" not in json.dumps([workflow, job]), (file, name)
+        assert "cheese-x99" not in json.dumps([workflow, job]), (file, name)
+
+
+def test_the_queue_job_keeps_a_read_only_token_no_secret_and_the_default_branch_script():
+    workflow = yaml.safe_load((WORKFLOWS / "pr-ready-queue.yml").read_text(encoding="utf-8"))
+    assert _triggers(workflow) == {"merge_group": {"types": ["checks_requested"]}}
+    assert workflow["permissions"] == {
+        "contents": "read",
+        "pull-requests": "read",
+        "issues": "read",
+    }
+    job = workflow["jobs"]["pr-ready"]
+    assert "secrets." not in json.dumps(workflow)
+    checkout = job["steps"][0]
+    assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout["uses"])
+    assert checkout["with"] == {
+        "ref": "${{ github.event.repository.default_branch }}",
+        "persist-credentials": False,
+    }
 
 
 def test_no_workflow_depends_on_blacksmith():
