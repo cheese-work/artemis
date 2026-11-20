@@ -1,0 +1,118 @@
+{
+  "manifest_version": 1,
+  "issue": "CHE-3101",
+  "sdk": "mmonetize",
+  "journey": "qualification/journeys/license_proof_mmonetize.md",
+  "runner": {
+    "repository": "https://github.com/cheese-work/artemis",
+    "base_sha": "41374d3d17888f968b4cefa095ac8e36f627e4ec"
+  },
+  "inputs": {
+    "sdk_repository": "https://github.com/tevo-studio/mMonetize",
+    "sdk_pr": 338,
+    "sdk_sha": "c18ae2c45914fbce2b11c70c690e1fc3d9a6b4c7",
+    "sample_repository": "https://github.com/tevo-studio/mMonetize-sample",
+    "sample_pr": 156,
+    "sample_sha": "8f070b9a47b82795ea72111d9b29b766a90217b2",
+    "service_repository": "https://github.com/tevo-studio/tevo-license-mobile-sdk",
+    "service_pr": 7,
+    "service_sha": "f91c99e1645343819b56fee00ea1adea7aa55367",
+    "service_image": "ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:cfcf54ffbc989049d85bca3e74677cd4e42aca2ed8c5b244f5ba4c066b9d2d8b"
+  },
+  "app": {
+    "package": "io.mmonetize.sample",
+    "proof_variant": "adsTestLicenseProof",
+    "proof_variant_debuggable": false,
+    "license_proof_port": 8080,
+    "apk_sha256": "87688b2232242fd9ab0efa5ae7b23ceb2e024ae409cf80c19644c60e41924039",
+    "signer_certificate_sha256": "5d2891b7657e01b8b3a0eb0a6315a651385454e4a834d4bd1f58ed4e41aedae1",
+    "artifact_available": true,
+    "artifact_location": "https://github.com/tevo-studio/mMonetize/actions/runs/42334402737 (artifact 13559715890, expires 2026-11-14 10:45 ICT; hashes from the CHE-4388 receipt; download unverified by the author's token)",
+    "build_command": "LICENSE_PROOF_PORT=8080 bash sample/.github/scripts/build-license-proof.sh <mMonetize-SDK-checkout>"
+  },
+  "service": {
+    "profile": "license-test",
+    "mode": "enforce",
+    "host": "congvc-X99",
+    "license_test_port": 8080,
+    "app_base_url": "http://10.0.2.2:8080",
+    "fresh_tmpfs_database_per_suite": true,
+    "admin_status_changes": "loopback /admin GET and /admin/status POST; require local test header, exact Origin, and observed package/certificate pair"
+  },
+  "scenarios": {
+    "approved": "Licensed; server row stays approved; zero SDK denial logs",
+    "pending": "NotLicensed; server row stays pending; one SDK denial log",
+    "revoked": "NotLicensed; server row stays revoked; one SDK denial log",
+    "offline-no-cache": "Unverified transport failure; app remains usable; service is stopped",
+    "debug-pending": "NOT-RUN: debuggable client returns Licensed without contacting the service; server-seen acceptance is unresolved"
+  },
+  "case_order": [
+    "pending",
+    "approved",
+    "revoked",
+    "debug-pending",
+    "offline-no-cache"
+  ],
+  "observation": {
+    "wait_timeout_seconds": 12,
+    "case_log_scope": "new launch PID only; filter the SDK denial tag, level and message",
+    "online_server_freshness": "record the pair last_seen before launch and require a strictly later value after launch",
+    "denial_log": {
+      "tag": "MMonetize",
+      "level": "ERROR",
+      "message_contains": "Not licensed: package="
+    },
+    "result_log": {
+      "tag": "LicenseProof",
+      "level": "INFO",
+      "message_contains_by_case": {
+        "approved": "Licensed",
+        "pending": "NotLicensed(packageName=io.mmonetize.sample",
+        "revoked": "NotLicensed(packageName=io.mmonetize.sample",
+        "offline-no-cache": "Unverified(reason=",
+        "debug-pending": "Licensed"
+      },
+      "message_regex_by_case": {
+        "approved": "(?<!Not)Licensed",
+        "pending": "NotLicensed\\(packageName=io\\.mmonetize\\.sample",
+        "revoked": "NotLicensed\\(packageName=io\\.mmonetize\\.sample",
+        "offline-no-cache": "Unverified\\(reason=",
+        "debug-pending": "(?<!Not)Licensed"
+      }
+    }
+  },
+  "initialization": {
+    "coverage": "NOT-PROVEN",
+    "gap_owner": "CHE-3101 before acceptance",
+    "reason": "The pinned sample exposes the license result and logs initialization exceptions, but it has no success observable that proves initialization proceeded or was denied."
+  },
+  "debug_case_input": {
+    "required": "A debuggable APK that routes to the X99 license-test endpoint",
+    "available_in_pinned_sources": false,
+    "reason": "The pinned licenseProof build is non-debuggable; the ordinary debug build does not configure the emulator HTTP endpoint.",
+    "disposition": "NOT-RUN until a compatible APK is pinned"
+  },
+  "fixture_reset": {
+    "before_each_case": "adb shell pm clear io.mmonetize.sample",
+    "before_each_suite": "start a fresh task-owned Compose project with the license-test profile",
+    "offline_case": "stop only the task-owned license-test service; this is the final case",
+    "after_suite": "docker compose -p <task-project> --profile license-test down"
+  },
+  "evidence_per_case": [
+    "logcat",
+    "launch_pid",
+    "screen",
+    "server_row",
+    "server_last_seen_before_after",
+    "testcase_revision",
+    "apk_sha256",
+    "device_serial",
+    "command_exit_status",
+    "fixture_cleanup_readback"
+  ],
+  "review": {
+    "independent_non_author_reviewers_required": 2,
+    "same_testcase_revision": true,
+    "must_precede_device_execution": true
+  }
+}
