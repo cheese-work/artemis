@@ -8,6 +8,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from sys import float_info
 import time
 from typing import Any, NoReturn
 
@@ -82,6 +83,33 @@ def _handle_recording_ack(
             )
         return
     logger.info("event=recording_ack_ignored host_id=%s reason=%s", host_id, reason)
+
+
+def _handle_recorder_ready(
+    store: RecordingAssignmentStore, host_id: str, message: dict[str, Any], clock_offset: float
+) -> None:
+    recording_id = message.get("recording_id")
+    revision = message.get("revision")
+    started_at = message.get("started_at")
+    if not isinstance(recording_id, str) or len(recording_id) > 64:
+        reason = "invalid_recording_id"
+    elif type(revision) is not int or revision < 1:
+        reason = "invalid_revision"
+    elif (
+        type(started_at) not in (int, float) or not -float_info.max <= started_at <= float_info.max
+    ):
+        reason = "invalid_started_at"
+    elif store.mark_ready(host_id, recording_id, revision, float(started_at), clock_offset):
+        logger.info(
+            "event=recorder_ready host_id=%s recording_id=%s revision=%d",
+            host_id,
+            recording_id,
+            revision,
+        )
+        return
+    else:
+        reason = "not_matched"
+    logger.info("event=recorder_ready_ignored host_id=%s reason=%s", host_id, reason)
 
 
 class EnrollRequest(BaseModel):
@@ -199,8 +227,11 @@ async def connect(ws: WebSocket) -> None:
     reason = "disconnected"
     try:
         try:
-            hello = _json_message(await asyncio.wait_for(ws.receive(), HELLO_TIMEOUT_SECONDS))
+            frame = await asyncio.wait_for(ws.receive(), HELLO_TIMEOUT_SECONDS)
+            received_at = host_registry.clock()
+            hello = _json_message(frame)
             host = host_registry.authenticate_hello(hello, _audience(ws.headers))
+            clock_offset = received_at - int(hello["timestamp"])
             session = host_registry.begin_connection(host)
         except RegistryError as error:
             await ws.send_json({"type": "error", "code": error.code, **error.extra})
@@ -319,6 +350,8 @@ async def connect(ws: WebSocket) -> None:
                     logger.info("event=%s host_id=%s%s", message["event"], host_id, fields)
             elif kind == "recording_ack":
                 _handle_recording_ack(recording_store, host_id, message)
+            elif kind == "recorder_ready":
+                _handle_recorder_ready(recording_store, host_id, message, clock_offset)
     except (ProtocolError, json.JSONDecodeError):
         reason = "bad_frame"
         if ws.application_state == WebSocketState.CONNECTED:
