@@ -1,18 +1,21 @@
 from hashlib import sha256
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 
-from apps.admin_console.services import recording_uploads
+from apps.admin_console.services import recording_uploads, run_storage
 from apps.admin_console.services.recording_uploads import (
     ChecksumMismatch,
     ChunkTooLarge,
     DeclaredLengthExceeded,
+    InsufficientStorage,
     InvalidUpload,
     OffsetConflict,
     RecordingUploadStore,
+    TooManyUploads,
     UploadConflict,
     UploadNotFound,
 )
@@ -253,3 +256,98 @@ def test_retry_syncs_directory_after_metadata_replace_error(
     monkeypatch.setattr(recording_uploads, "_fsync_directory", track_sync)
     assert _append(store, upload_id, 0, b"rec") == 3
     assert synced == [tmp_path]
+
+
+def test_create_rounds_up_required_space_and_reads_default_at_call_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = RecordingUploadStore(tmp_path)
+    disk = SimpleNamespace(free=121)
+
+    def disk_usage(path: Path) -> SimpleNamespace:
+        assert path == tmp_path
+        return disk
+
+    monkeypatch.setattr(run_storage, "disk_usage", disk_usage)
+    with pytest.raises(InsufficientStorage):
+        store.create(HOST, SESSION, RECORDING, 101, DIGEST)
+    assert not list(tmp_path.iterdir())
+
+    disk.free = 122
+    assert store.create(HOST, SESSION, RECORDING, 101, DIGEST)[1] == 0
+
+
+def test_create_reserves_only_remaining_bytes_across_hosts(tmp_path: Path) -> None:
+    disk = SimpleNamespace(free=120)
+    store = RecordingUploadStore(tmp_path, disk_usage=lambda _path: disk)
+    upload_id, _ = store.create(HOST, SESSION, RECORDING, 100, DIGEST)
+    assert _append(store, upload_id, 0, b"x" * 40) == 40
+    before = _snapshot(tmp_path)
+
+    disk.free = 191
+    with pytest.raises(InsufficientStorage):
+        store.create("host-b", SESSION, RECORDING, 100, DIGEST)
+    assert _snapshot(tmp_path) == before
+
+    disk.free = 192
+    assert store.create("host-b", SESSION, RECORDING, 100, DIGEST)[1] == 0
+
+
+def test_create_limits_new_uploads_per_host_but_allows_retry(tmp_path: Path) -> None:
+    disk = SimpleNamespace(free=1000)
+    store = RecordingUploadStore(tmp_path, disk_usage=lambda _path: disk)
+    upload_id, _ = store.create(HOST, SESSION, RECORDING, 9, DIGEST)
+    assert _append(store, upload_id, 0, b"rec") == 3
+    store.create(HOST, SESSION, str(UUID(int=2)), 9, DIGEST)
+    before = _snapshot(tmp_path)
+
+    disk.free = 0
+    with pytest.raises(TooManyUploads):
+        store.create(HOST, SESSION, str(UUID(int=3)), 9, DIGEST)
+    assert store.create(HOST, SESSION, RECORDING, 9, DIGEST) == (upload_id, 3)
+    assert _snapshot(tmp_path) == before
+
+    disk.free = 1000
+    assert store.create("host-b", SESSION, RECORDING, 9, DIGEST)[0] != upload_id
+
+
+def test_sweep_abandoned_uses_last_update_and_removes_both_files(tmp_path: Path) -> None:
+    now = 100.0
+    store = RecordingUploadStore(tmp_path, clock=lambda: now)
+    stale_id, _ = store.create(HOST, SESSION, RECORDING, 9, DIGEST)
+    active_id, _ = store.create(HOST, SESSION, str(UUID(int=2)), 9, DIGEST)
+    now += 3600
+    assert _append(store, active_id, 0, b"rec") == 3
+
+    now += 23 * 3600 - 1
+    assert store.sweep_abandoned() == []
+    now += 1
+    assert store.sweep_abandoned() == [stale_id]
+    assert set(_snapshot(tmp_path)) == {f"{active_id}.json", f"{active_id}.part"}
+    assert store.offset(HOST, active_id) == 3
+    with pytest.raises(UploadNotFound):
+        store.offset(HOST, stale_id)
+    with pytest.raises(UploadNotFound):
+        _append(store, stale_id, 0, b"rec")
+    with pytest.raises(UploadNotFound):
+        store.abort(HOST, stale_id)
+
+
+def test_create_sweeps_before_checking_slots_and_space(tmp_path: Path) -> None:
+    now = 100.0
+    disk = SimpleNamespace(free=240)
+    store = RecordingUploadStore(
+        tmp_path, clock=lambda: now, disk_usage=lambda _path: disk, abandoned_after_seconds=60
+    )
+    stale_id, _ = store.create(HOST, SESSION, RECORDING, 100, DIGEST)
+    now += 30
+    active_id, _ = store.create(HOST, SESSION, str(UUID(int=2)), 100, DIGEST)
+    now += 30
+
+    new_id, offset = store.create(HOST, SESSION, str(UUID(int=3)), 100, DIGEST)
+
+    assert offset == 0
+    assert new_id not in {stale_id, active_id}
+    assert set(_snapshot(tmp_path)) == {
+        f"{upload_id}.{suffix}" for upload_id in (active_id, new_id) for suffix in ("json", "part")
+    }
