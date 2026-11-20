@@ -14,11 +14,13 @@ from pathlib import Path
 from artemis.config import TRACES_PATH
 from artemis.data_engine.chat_sessions import TERMINAL
 from artemis.runtime.cancel_requests import current_process_created_at, is_cancel_requested
+from artemis.runtime.device_lock import DeviceBusyError
 
 logger = logging.getLogger(__name__)
 
 
 NOTE_LIMIT = 64 * 1024
+DEVICE_ADMISSION_TIMEOUT_SECONDS = 20
 
 
 # Checked once at import: tests and wrappers may replace these functions later.
@@ -194,16 +196,26 @@ async def run_chat_session(store, identity, lease, execute, *, idle_seconds=300,
     deadline = None
     turn_id = None
     pending_tips = []
+    admission_failure = "The session phone could not be re-acquired. Reconnect the original phone, then send another message."
     try:
         acquisition = asyncio.create_task(
-            asyncio.to_thread(lease.acquire, cancel_event=cancel_event)
+            asyncio.to_thread(
+                lease.acquire,
+                admission_timeout=DEVICE_ADMISSION_TIMEOUT_SECONDS,
+                cancel_event=cancel_event,
+            )
         )
         try:
             await asyncio.shield(acquisition)
+        except DeviceBusyError as exc:
+            admission_failure = str(exc)
+            raise
         except asyncio.CancelledError:
             cancel_event.set()
             try:
                 await asyncio.shield(acquisition)
+            except DeviceBusyError:
+                pass
             finally:
                 lease.release()
             raise
@@ -265,16 +277,13 @@ async def run_chat_session(store, identity, lease, execute, *, idle_seconds=300,
                     return
                 await asyncio.sleep(poll_seconds)
     finally:
-        if not acquired:
-            pending_turn = store.next_turn(identity)
-            if pending_turn:
-                store.fail_admission(
-                    pending_turn["turn_id"],
-                    "The session phone could not be re-acquired. Reconnect the original phone, then send another message.",
-                )
         try:
             if acquired:
                 await asyncio.to_thread(lease.release)
+            else:
+                pending_turn = store.next_turn(identity)
+                if pending_turn:
+                    store.fail_admission(pending_turn["turn_id"], admission_failure)
         finally:
             try:
                 store.release_worker(identity, pid)

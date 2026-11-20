@@ -15,6 +15,14 @@ import time
 import uuid
 
 
+class UnknownSdkClaimIdentity(ValueError):
+    """The SDK's requested device is not an alias in the broker's census."""
+
+
+class DeviceClaimOccupied(ValueError):
+    """A known device already has an owner or reservation."""
+
+
 def _text(*values):
     if any(not isinstance(v, str) or not v.strip() for v in values):
         raise ValueError("claim identity required")
@@ -66,12 +74,12 @@ def _available(conn, device_id, aliases, lock_dir, *, own_path=None):
         "WHERE d.device_id=? AND g.state!='released'",
         (device_id,),
     ).fetchone():
-        raise ValueError("device occupied by broker")
+        raise DeviceClaimOccupied("device occupied by broker")
     for (reserved,) in conn.execute("SELECT reserved FROM broker_tickets WHERE state='offered'"):
         if device_id in json.loads(reserved):
-            raise ValueError("device reserved by broker")
+            raise DeviceClaimOccupied("device reserved by broker")
     if conn.execute("SELECT 1 FROM android_claims WHERE device_id=?", (device_id,)).fetchone():
-        raise ValueError("device claimed by Android")
+        raise DeviceClaimOccupied("device claimed by Android")
     check_lock_conflicts(device_id, aliases, lock_dir, own_path=own_path)
 
 
@@ -88,7 +96,7 @@ def check_lock_conflicts(device_id, aliases, lock_dir, *, own_path=None):
             continue  # Existing same-path owner validation remains the SDK's job.
         owner = json.loads(path.read_text())
         if _canonical(aliases, owner["device_id"]) == device_id:
-            raise ValueError("device owned by SDK")
+            raise DeviceClaimOccupied("device owned by SDK")
 
 
 def check_sdk_available(db_path, guard_path, alias, lock_dir, own_path):
@@ -97,7 +105,10 @@ def check_sdk_available(db_path, guard_path, alias, lock_dir, own_path):
         source, aliases = _source(conn, guard_path)
         if Path(source[6]).resolve() != Path(lock_dir).resolve():
             raise ValueError("SDK lock directory differs from census")
-        _available(conn, _canonical(aliases, alias), aliases, lock_dir, own_path=own_path)
+        _text(alias)
+        if alias not in aliases:
+            raise UnknownSdkClaimIdentity("unknown claim identity")
+        _available(conn, aliases[alias], aliases, lock_dir, own_path=own_path)
 
 
 def check_sdk_handoff(db_path, guard_path, lease_id, device_id, endpoint, lock_path, token, pid):
