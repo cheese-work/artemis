@@ -124,21 +124,34 @@ func saveConfig(filename string, config configuration) error {
 }
 
 func saveJSON(filename string, value any) error {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
+	if err := ensurePrivateDirectory(filepath.Dir(filename)); err != nil {
 		return failure("SQH-E002", err)
 	}
-	directory := filepath.Dir(filename)
-	if err = os.MkdirAll(directory, 0700); err != nil {
+	if err := replaceJSON(filename, ".smartqa-*", value); err != nil {
 		return failure("SQH-E002", err)
+	}
+	return nil
+}
+
+func ensurePrivateDirectory(directory string) error {
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		return err
 	}
 	info, err := os.Lstat(directory)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
-		return failure("SQH-E002", fmt.Errorf("state directory must be private: %s", directory))
+		return fmt.Errorf("state directory must be private: %s", directory)
 	}
-	temporary, err := os.CreateTemp(directory, ".smartqa-*")
+	return nil
+}
+
+func replaceJSON(filename, tempPattern string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return failure("SQH-E002", err)
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(filename), tempPattern)
+	if err != nil {
+		return err
 	}
 	name := temporary.Name()
 	defer os.Remove(name)
@@ -155,8 +168,5 @@ func saveJSON(filename string, value any) error {
 	if err == nil {
 		err = os.Rename(name, filename)
 	}
-	if err != nil {
-		return failure("SQH-E002", err)
-	}
-	return nil
+	return err
 }
