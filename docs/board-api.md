@@ -306,7 +306,7 @@ order:
 
 | Parameter | Filter |
 | --- | --- |
-| `q` | Goal text (existing FTS5 `runs_fts`). |
+| `q` | Goal text, device serial and model, execution status, QA review, app build, agent model, suite version, requester and host ID. |
 | `include_notes` | `true` also matches annotation and comment text. Default `false`. |
 | `device_id` | Repeatable; aliases resolve. |
 | `verdict`, `status`, `review` | Three separate filters: application verdict, execution status (legacy `status`), QA review. |
@@ -317,9 +317,16 @@ order:
 | `requester` | Who ran it. |
 | `scope` | `mine`, `available`, `all`; see [scopes](board-permissions.md#scopes). |
 
+FTS5 ranks visible goal matches ahead of metadata-only matches, then uses
+goal-weighted BM25 and breaks ties by descending catalog row ID. Continue a
+ranked search with the same query and filters; if the cursor run is no longer
+visible or no longer matches, the API returns `400 invalid_cursor`. Restart at
+the first page. Searching for `completed` also finds runs stored as `success`.
+
 Snippets are built after the visibility join. Unknown historical values stay
-`null` and match no value filter. When FTS5 is unavailable the response carries
-the existing `search_fallback_substring` warning.
+`null` and contribute no search text. Without FTS5, search matches substrings
+in the same fields, keeps newest-first order, and returns the existing
+`search_fallback_substring` warning.
 
 #### Query-layer slice (CHE-1470)
 

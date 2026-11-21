@@ -184,6 +184,85 @@ def test_rebuild_restores_a_wiped_index_and_drops_stale_rows(tmp_path, rc):
     assert _search(rc, db, "ghost") == []
 
 
+@pytest.fixture
+def old_catalog(tmp_path, rc):
+    from artemis.data_engine import run_snapshot
+
+    db = tmp_path / "data_engine.db"
+    _legacy_db(db, [("old", "check wifi", 1.0, "success", None)])
+    rc.migrate(db)
+    run_snapshot.migrate(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE run_meta SET agent_model = 'fixturemodel' WHERE session_id = 'old'")
+    assert _search(rc, db, "wifi") == ["old"]
+    assert _search(rc, db, "fixturemodel") == []
+    return db
+
+
+def test_snapshot_index_upgrade_rebuilds_old_rows_only_once(old_catalog, rc):
+    report = rc.migrate(old_catalog)
+
+    assert report.backup_path is not None
+    assert _search(rc, report.backup_path, "fixturemodel") == []
+    assert _search(rc, old_catalog, "fixturemodel") == ["old"]
+    assert _search(rc, old_catalog, "completed") == ["old"]
+    with sqlite3.connect(old_catalog) as conn:
+        triggers = dict(conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'"))
+        assert "UPDATE OF initial_goal, status" in triggers["run_catalog_sessions_au"]
+        assert "agent_model" in triggers["run_catalog_meta_au"]
+        before = conn.execute(
+            "SELECT revision, updated_at FROM schema_revisions WHERE module = 'run_catalog_fts'"
+        ).fetchone()
+        assert before is not None and before[0] == 1
+        version = conn.execute("PRAGMA data_version").fetchone()
+        assert rc.migrate(old_catalog).backup_path is None
+        assert conn.execute("PRAGMA data_version").fetchone() == version
+
+
+def test_interrupted_snapshot_rebuild_leaves_old_search_live_and_retries(
+    old_catalog, rc, monkeypatch
+):
+    connect = sqlite3.connect
+    observed = []
+
+    class Interrupted(sqlite3.Connection):
+        def execute(self, statement, parameters=()):
+            result = super().execute(statement, parameters)
+            if statement.strip() == "DELETE FROM runs_fts":
+                assert self.in_transaction
+                observed.append(_search(rc, old_catalog, "wifi"))
+                raise sqlite3.OperationalError("rebuild interrupted")
+            return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            sqlite3,
+            "connect",
+            lambda *args, **kwargs: connect(*args, **kwargs, factory=Interrupted),
+        )
+        with pytest.raises(sqlite3.OperationalError, match="rebuild interrupted"):
+            rc.migrate(old_catalog)
+
+    assert observed == [["old"]]
+    assert _search(rc, old_catalog, "wifi") == ["old"]
+    assert _search(rc, old_catalog, "fixturemodel") == []
+    rc.migrate(old_catalog)
+    assert _search(rc, old_catalog, "wifi") == ["old"]
+    assert _search(rc, old_catalog, "fixturemodel") == ["old"]
+
+
+def test_search_session_ids_ranks_goal_above_metadata(old_catalog, rc):
+    rc.migrate(old_catalog)
+    goal = _insert(old_catalog, "fixturemodel")
+    newer_meta = _insert(old_catalog, "check wifi")
+    with sqlite3.connect(old_catalog) as conn:
+        conn.execute(
+            "UPDATE run_meta SET agent_model = 'fixturemodel' WHERE session_id = ?", (newer_meta,)
+        )
+
+    assert _search(rc, old_catalog, "fixturemodel") == [goal, newer_meta, "old"]
+
+
 def test_session_upsert_does_not_reset_run_meta(tmp_path, rc):
     """The hazard behind side tables: StorageManager upserts rewrite session rows."""
     from artemis.data_engine.storage import StorageManager
