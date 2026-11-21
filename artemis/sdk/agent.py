@@ -59,7 +59,7 @@ from artemis.controllers.platform_specific_commands_controller import (
     get_first_device,
 )
 from artemis.runtime import DeviceExecutionLock, device_policy, trace_store
-from artemis.runtime.device_lock import LEASE_HANDOFF_ENV
+from artemis.runtime.device_lock import LEASE_HANDOFF_ENV, MANAGED_AVD_ADMISSION_TIMEOUT_SECONDS
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.cancel_requests import watch_for_cancel_request
@@ -226,7 +226,13 @@ class Agent(AgentBase):
             max_concurrency=self._config.max_concurrency,
             session_id=self._session_id,
         )
-        acquiring = asyncio.create_task(asyncio.to_thread(lock.acquire, blocking=False))
+        acquiring = asyncio.create_task(
+            asyncio.to_thread(
+                lock.acquire,
+                blocking=False,
+                admission_timeout=MANAGED_AVD_ADMISSION_TIMEOUT_SECONDS,
+            )
+        )
 
         def release_abandoned(acquisition: asyncio.Task[None]) -> None:
             lock.release()
