@@ -320,7 +320,8 @@ order:
 FTS5 ranks visible goal matches ahead of metadata-only matches, then uses
 goal-weighted BM25 and breaks ties by descending catalog row ID. Continue a
 ranked search with the same query and filters; if the cursor run is no longer
-visible or no longer matches, restart at the first page.
+visible or no longer matches, the API returns `400 invalid_cursor`. Restart at
+the first page. Searching for `completed` also finds runs stored as `success`.
 
 Snippets are built after the visibility join. Unknown historical values stay
 `null` and contribute no search text. Without FTS5, search matches substrings

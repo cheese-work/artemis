@@ -216,6 +216,9 @@ class RunCatalogRepository:
             where.append(clause)
             params += term_params
         if count:
+            if cursor:
+                where.append("m.session_id = ?")
+                params.append(cursor[1])
             return (
                 "SELECT COUNT(*) FROM sessions s JOIN run_meta m ON m.session_id = s.session_id "
                 f"WHERE {' AND '.join(where)}",
@@ -283,6 +286,12 @@ class RunCatalogRepository:
                     match=match, cursor=decoded, limit=limit + 1, **filters
                 )
                 rows = conn.execute(sql, params).fetchall()
+                if decoded and not rows:
+                    anchor_sql, anchor_params = self.list_query(
+                        match=match, cursor=decoded, count=True, **filters
+                    )
+                    if not conn.execute(anchor_sql, anchor_params).fetchone()[0]:
+                        raise InvalidCursor("cursor is not a current search hit")
             else:
                 rows = []
                 for nulls in (False, True):

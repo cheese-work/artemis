@@ -189,7 +189,7 @@ def old_catalog(tmp_path, rc):
     from artemis.data_engine import run_snapshot
 
     db = tmp_path / "data_engine.db"
-    _legacy_db(db, [("old", "check wifi", 1.0, "completed", None)])
+    _legacy_db(db, [("old", "check wifi", 1.0, "success", None)])
     rc.migrate(db)
     run_snapshot.migrate(db)
     with sqlite3.connect(db) as conn:
@@ -205,6 +205,7 @@ def test_snapshot_index_upgrade_rebuilds_old_rows_only_once(old_catalog, rc):
     assert report.backup_path is not None
     assert _search(rc, report.backup_path, "fixturemodel") == []
     assert _search(rc, old_catalog, "fixturemodel") == ["old"]
+    assert _search(rc, old_catalog, "completed") == ["old"]
     with sqlite3.connect(old_catalog) as conn:
         triggers = dict(conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'"))
         assert "UPDATE OF initial_goal, status" in triggers["run_catalog_sessions_au"]

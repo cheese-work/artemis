@@ -216,10 +216,10 @@ async def test_search_matches_snapshot_terms_only_on_visible_live_runs(
             conn.execute("DROP TABLE runs_fts")
         monkeypatch.setattr(run_catalog, "fts5_available", lambda conn: False)
         run_catalog.migrate(library.db)
-    visible = _seed(library.db, status="interrupted")
-    hidden = _seed(library.db, status="interrupted")
-    deleted = _seed(library.db, status="interrupted")
-    _seed(library.db)
+    visible = _seed(library.db, status="success")
+    hidden = _seed(library.db, status="success")
+    deleted = _seed(library.db, status="success")
+    _seed(library.db, status="interrupted")
     fields = dict(
         device_model="pixel",
         app_build="canary",
@@ -231,7 +231,7 @@ async def test_search_matches_snapshot_terms_only_on_visible_live_runs(
     _meta(library.db, hidden, requested_by="qa2@example.com", **fields)
     _meta(library.db, deleted, requested_by="qa@example.com", deleted_at=1, **fields)
 
-    for term in (*fields.values(), "interrupted"):
+    for term in (*fields.values(), "completed", "success"):
         response = await qa.get("/api/runs", params={"q": term, "scope": "mine"})
         assert response.status_code == 200, response.text
         page = response.json()
@@ -262,6 +262,35 @@ async def test_fts_pages_goal_matches_before_metadata_even_without_start_time(en
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["status", "hidden", "unknown"])
+async def test_ranked_search_rejects_a_cursor_outside_current_hits(library, qa, change):
+    from apps.admin_console.database.repositories.run_catalog_repository import encode_cursor
+
+    for _ in range(3):
+        sid = _seed(library.db, status="running")
+        _meta(library.db, sid, requested_by="qa@example.com")
+    params = {"q": "running", "scope": "mine", "limit": 1}
+    first = await qa.get("/api/runs", params=params)
+    assert first.status_code == 200, first.text
+    page = first.json()
+    sid = page["runs"][0]["session_id"]
+    cursor = page["next_cursor"]
+    assert cursor is not None
+
+    if change == "status":
+        with sqlite3.connect(library.db) as conn:
+            conn.execute("UPDATE sessions SET status = 'success' WHERE session_id = ?", (sid,))
+    elif change == "hidden":
+        _meta(library.db, sid, requested_by="qa2@example.com")
+    else:
+        cursor = encode_cursor(1.0, "unknown-session")
+
+    response = await qa.get("/api/runs", params={**params, "cursor": cursor})
+    assert response.status_code == 400, response.text
+    assert response.json()["error"] == "invalid_cursor"
+
+
+@pytest.mark.asyncio
 async def test_search_reindexes_agent_model_and_execution_status_on_update(env):
     sid = _seed(env, "test the launcher", status="running")
     _meta(env, sid, agent_model="firstmodel")
@@ -270,12 +299,12 @@ async def test_search_reindexes_agent_model_and_execution_status_on_update(env):
 
     _meta(env, sid, agent_model="secondmodel")
     with sqlite3.connect(env) as conn:
-        conn.execute("UPDATE sessions SET status = 'cancelled' WHERE session_id = ?", (sid,))
+        conn.execute("UPDATE sessions SET status = 'success' WHERE session_id = ?", (sid,))
 
     assert await _ids(q="firstmodel") == []
     assert await _ids(q="running") == []
     assert await _ids(q="secondmodel") == [sid]
-    assert await _ids(q="cancelled") == [sid]
+    assert await _ids(q="completed") == [sid]
 
 
 @pytest.mark.asyncio

@@ -91,7 +91,7 @@ META_TEXT = " || ' ' || ".join(
     for field in (
         _SERIAL,
         "m.device_model",
-        "s.status",
+        "CASE WHEN s.status = 'success' THEN 'success completed' ELSE s.status END",
         "m.review",
         "m.app_build",
         "m.agent_model",
