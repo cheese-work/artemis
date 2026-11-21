@@ -215,12 +215,20 @@ async def test_search_counts_intersect_filters_and_visibility(library, qa, monke
     assert (await _page(qa, q="no match"))["total"] == 0
 
 
+def _remove_review(db):
+    with sqlite3.connect(db) as conn:
+        for trigger in run_catalog._TRIGGERS_FTS:
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute("DROP TABLE IF EXISTS runs_fts")
+        conn.execute("DELETE FROM schema_revisions WHERE module = ?", (run_catalog.FTS_MODULE,))
+        conn.execute("ALTER TABLE run_meta DROP COLUMN review")
+        conn.execute("UPDATE schema_revisions SET revision = 1 WHERE module = 'run_meta_ext'")
+
+
 @pytest.mark.asyncio
 async def test_review_migration_is_nullable_and_preserves_the_snapshot(library, qa):
     session_id = _run(library, app_build="build-a")
-    with sqlite3.connect(library.db) as conn:
-        conn.execute("ALTER TABLE run_meta DROP COLUMN review")
-        conn.execute("UPDATE schema_revisions SET revision = 1 WHERE module = 'run_meta_ext'")
+    _remove_review(library.db)
     StorageManager(library.db, library.traces)
     page = await _page(qa, app_build="build-a")
     assert _ids(page) == [session_id]
@@ -233,8 +241,7 @@ async def test_review_migration_is_nullable_and_preserves_the_snapshot(library, 
 @pytest.mark.asyncio
 async def test_missing_review_migration_is_retryable_not_an_unscoped_fallback(library, qa):
     await _page(qa)
-    with sqlite3.connect(library.db) as conn:
-        conn.execute("ALTER TABLE run_meta DROP COLUMN review")
+    _remove_review(library.db)
     response = await qa.get("/api/runs", params={"app_build": "build-a"})
     assert response.status_code == 503
     assert response.json()["error"] == "catalog_not_ready"

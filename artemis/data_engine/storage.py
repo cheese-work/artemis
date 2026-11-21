@@ -38,6 +38,7 @@ from artemis.data_engine import principals, run_snapshot
 from artemis.data_engine.devices import migrate as migrate_devices
 from artemis.data_engine.prompt_critiques import migrate as migrate_prompt_critiques
 from artemis.data_engine.run_catalog import migrate as migrate_run_catalog
+from artemis.data_engine.run_catalog import migrate_search as migrate_run_search
 from artemis.data_engine.run_connections import migrate as migrate_run_connections
 from artemis.runtime.lifecycle import ensure_lifecycle_schema
 from artemis.utils.logger import get_logger
@@ -286,6 +287,7 @@ class StorageManager:
         try:
             migrate_run_catalog(self.db_path)
             run_snapshot.migrate(self.db_path)
+            migrate_run_search(self.db_path)
             from artemis.data_engine import chat_sessions
 
             chat_sessions.migrate(self.db_path)

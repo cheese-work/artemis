@@ -203,6 +203,82 @@ async def test_search_finds_prompt_and_run_meta_text_and_pages(env):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fallback", [False, True])
+async def test_search_matches_snapshot_terms_only_on_visible_live_runs(
+    library, qa, monkeypatch, fallback
+):
+    from artemis.data_engine import run_catalog
+
+    if fallback:
+        with sqlite3.connect(library.db) as conn:
+            for trigger in run_catalog._TRIGGERS_FTS:
+                conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            conn.execute("DROP TABLE runs_fts")
+        monkeypatch.setattr(run_catalog, "fts5_available", lambda conn: False)
+        run_catalog.migrate(library.db)
+    visible = _seed(library.db, status="interrupted")
+    hidden = _seed(library.db, status="interrupted")
+    deleted = _seed(library.db, status="interrupted")
+    _seed(library.db)
+    fields = dict(
+        device_model="pixel",
+        app_build="canary",
+        agent_model="gemini",
+        suite_version="smoketest",
+        review="accepted",
+    )
+    _meta(library.db, visible, requested_by="qa@example.com", **fields)
+    _meta(library.db, hidden, requested_by="qa2@example.com", **fields)
+    _meta(library.db, deleted, requested_by="qa@example.com", deleted_at=1, **fields)
+
+    for term in (*fields.values(), "interrupted"):
+        response = await qa.get("/api/runs", params={"q": term, "scope": "mine"})
+        assert response.status_code == 200, response.text
+        page = response.json()
+        assert [run["session_id"] for run in page["runs"]] == [visible], term
+        assert page["total"] == 1
+        assert page["warnings"] == (["search_fallback_substring"] if fallback else [])
+
+
+@pytest.mark.asyncio
+async def test_fts_pages_goal_matches_before_metadata_even_without_start_time(env):
+    older_tie = _seed(env, "needle " + "long goal " * 50, start=10)
+    newer_tie = _seed(env, "needle " + "long goal " * 50, start=None)
+    metadata = _seed(env, "short task", start=20)
+    _meta(env, metadata, agent_model="needle " * 8)
+
+    cursor = None
+    seen = []
+    for _ in range(3):
+        params = {"cursor": cursor} if cursor else {}
+        response = await _get("/api/runs", q="needle", limit=1, **params)
+        assert response.status_code == 200, response.text
+        page = response.json()
+        assert page["total"] == 3
+        seen.extend(run["session_id"] for run in page["runs"])
+        cursor = page["next_cursor"]
+    assert seen == [newer_tie, older_tie, metadata]
+    assert cursor is None
+
+
+@pytest.mark.asyncio
+async def test_search_reindexes_agent_model_and_execution_status_on_update(env):
+    sid = _seed(env, "test the launcher", status="running")
+    _meta(env, sid, agent_model="firstmodel")
+    assert await _ids(q="firstmodel") == [sid]
+    assert await _ids(q="running") == [sid]
+
+    _meta(env, sid, agent_model="secondmodel")
+    with sqlite3.connect(env) as conn:
+        conn.execute("UPDATE sessions SET status = 'cancelled' WHERE session_id = ?", (sid,))
+
+    assert await _ids(q="firstmodel") == []
+    assert await _ids(q="running") == []
+    assert await _ids(q="secondmodel") == [sid]
+    assert await _ids(q="cancelled") == [sid]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "q", ['"', "NEAR(", "col:x", "wifi OR", "(((", "'; DROP TABLE run_meta;--", "*"]
 )

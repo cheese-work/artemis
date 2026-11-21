@@ -26,6 +26,7 @@ and the readiness mode says so.
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass
 import logging
 import os
@@ -33,6 +34,8 @@ from pathlib import Path
 import re
 import sqlite3
 import time
+
+from artemis.data_engine import schema_revisions
 
 logger = logging.getLogger(__name__)
 
@@ -77,13 +80,32 @@ CREATE TABLE IF NOT EXISTS run_recording_state (
     "CREATE INDEX IF NOT EXISTS idx_sessions_start_order ON sessions (start_time DESC, session_id DESC)",
 )
 
-# Searchable run_meta text, shared by the index and the substring fallback.
-META_TEXT = (
-    "coalesce(m.host_id, '') || ' ' || "
-    "coalesce(CASE WHEN json_valid(m.device_ref) "
-    "THEN json_extract(m.device_ref, '$.serial') END, '') || ' ' || "
+_SERIAL = "CASE WHEN json_valid(m.device_ref) THEN json_extract(m.device_ref, '$.serial') END"
+_LEGACY_META_TEXT = (
+    f"coalesce(m.host_id, '') || ' ' || coalesce({_SERIAL}, '') || ' ' || "
     "coalesce(m.requested_by, '')"
 )
+_SNAPSHOT_COLUMNS = ("device_model", "review", "app_build", "agent_model", "suite_version")
+META_TEXT = " || ' ' || ".join(
+    f"coalesce({field}, '')"
+    for field in (
+        _SERIAL,
+        "m.device_model",
+        "s.status",
+        "m.review",
+        "m.app_build",
+        "m.agent_model",
+        "m.suite_version",
+        "m.requested_by",
+        "m.host_id",
+    )
+)
+FTS_MODULE = "run_catalog_fts"
+FTS_RANK_COLUMNS = (
+    "(highlight(runs_fts, 0, char(1), char(2)) = runs_fts.prompt) AS goal_miss, "
+    "bm25(runs_fts, 10.0, 1.0) AS score, -m.rid AS sort_rid"
+)
+FTS_RANK_ORDER = "goal_miss, score, sort_rid"
 
 
 def _device_ref_sql(column: str) -> str:
@@ -94,19 +116,19 @@ def _device_ref_sql(column: str) -> str:
     )
 
 
-def _refresh(session_id: str) -> str:
+def _refresh(session_id: str, meta_text: str) -> str:
     """Re-index one session; tombstoned or deleted runs end up out of the index."""
     return (
         f"DELETE FROM runs_fts WHERE rowid IN "
         f"(SELECT rid FROM run_meta WHERE session_id = {session_id}); "
         f"INSERT INTO runs_fts (rowid, prompt, meta) "
-        f"SELECT m.rid, coalesce(s.initial_goal, ''), {META_TEXT} "
+        f"SELECT m.rid, coalesce(s.initial_goal, ''), {meta_text} "
         f"FROM run_meta m JOIN sessions s ON s.session_id = m.session_id "
         f"WHERE m.session_id = {session_id} AND m.deleted_at IS NULL;"
     )
 
 
-def _trigger_ddl(fts: bool) -> list[str]:
+def _trigger_ddl(fts: bool, *, snapshots: bool = False) -> list[str]:
     # Not INSERT OR IGNORE: an outer INSERT OR REPLACE on sessions overrides the
     # conflict clause of statements inside a trigger and would replace run_meta.
     create_meta = (
@@ -119,10 +141,13 @@ def _trigger_ddl(fts: bool) -> list[str]:
         f"deleted_reason = coalesce(deleted_reason, 'session_deleted') "
         f"WHERE session_id = old.session_id;"
     )
+    refresh = (
+        _refresh("new.session_id", META_TEXT if snapshots else _LEGACY_META_TEXT) if fts else ""
+    )
     ddl = [
         "CREATE TRIGGER IF NOT EXISTS run_catalog_sessions_ai AFTER INSERT ON sessions BEGIN "
         + create_meta
-        + (_refresh("new.session_id") if fts else "")
+        + refresh
         + " END",
         "CREATE TRIGGER IF NOT EXISTS run_catalog_sessions_ad AFTER DELETE ON sessions BEGIN "
         + (
@@ -135,20 +160,40 @@ def _trigger_ddl(fts: bool) -> list[str]:
         + " END",
     ]
     if fts:
+        session_columns = "initial_goal, status" if snapshots else "initial_goal"
+        meta_columns = "host_id, device_ref, requested_by, deleted_at"
+        if snapshots:
+            meta_columns += ", " + ", ".join(_SNAPSHOT_COLUMNS)
         ddl += [
             "CREATE TRIGGER IF NOT EXISTS run_catalog_sessions_au "
-            "AFTER UPDATE OF initial_goal ON sessions BEGIN " + _refresh("new.session_id") + " END",
+            f"AFTER UPDATE OF {session_columns} ON sessions BEGIN {refresh} END",
             "CREATE TRIGGER IF NOT EXISTS run_catalog_meta_ai AFTER INSERT ON run_meta BEGIN "
-            + _refresh("new.session_id")
-            + " END",
+            f"{refresh} END",
             "CREATE TRIGGER IF NOT EXISTS run_catalog_meta_au AFTER UPDATE OF "
-            "host_id, device_ref, requested_by, deleted_at ON run_meta BEGIN "
-            + _refresh("new.session_id")
-            + " END",
+            f"{meta_columns} ON run_meta BEGIN {refresh} END",
             "CREATE TRIGGER IF NOT EXISTS run_catalog_meta_ad AFTER DELETE ON run_meta BEGIN "
             "DELETE FROM runs_fts WHERE rowid = old.rid; END",
         ]
     return ddl
+
+
+def _rebuild_ddl(meta_text: str) -> tuple[str, str]:
+    return (
+        "DELETE FROM runs_fts",
+        f"INSERT INTO runs_fts (rowid, prompt, meta) "
+        f"SELECT m.rid, coalesce(s.initial_goal, ''), {meta_text} "
+        f"FROM run_meta m JOIN sessions s ON s.session_id = m.session_id "
+        f"WHERE m.deleted_at IS NULL",
+    )
+
+
+FTS_REVISIONS = (
+    (
+        *(f"DROP TRIGGER IF EXISTS {name}" for name in _TRIGGERS_FTS),
+        *_trigger_ddl(fts=True, snapshots=True),
+        *_rebuild_ddl(META_TEXT),
+    ),
+)
 
 
 def _has(conn: sqlite3.Connection, kind: str, name: str) -> bool:
@@ -170,6 +215,20 @@ def catalog_ready(conn: sqlite3.Connection) -> bool:
 
 def search_mode(conn: sqlite3.Connection) -> str:
     return "fts" if _has(conn, "table", "runs_fts") else "substring"
+
+
+def _has_snapshot_columns(conn: sqlite3.Connection) -> bool:
+    return set(_SNAPSHOT_COLUMNS) <= {row[1] for row in conn.execute("PRAGMA table_info(run_meta)")}
+
+
+def _snapshot_index_installed(conn: sqlite3.Connection) -> bool:
+    return (
+        _has(conn, "table", "schema_revisions")
+        and conn.execute(
+            "SELECT 1 FROM schema_revisions WHERE module = ? AND revision >= 1", (FTS_MODULE,)
+        ).fetchone()
+        is not None
+    )
 
 
 def _complete(conn: sqlite3.Connection, fts: bool) -> bool:
@@ -210,7 +269,8 @@ def ensure_schema(conn: sqlite3.Connection) -> bool:
         # Replace, never keep: triggers from a substring-mode install lack the index upkeep.
         for name in dict.fromkeys(_TRIGGERS_FTS + _TRIGGERS_PLAIN):
             conn.execute(f"DROP TRIGGER IF EXISTS {name}")
-        for statement in _trigger_ddl(fts):
+        snapshots = fts and _snapshot_index_installed(conn) and _has_snapshot_columns(conn)
+        for statement in _trigger_ddl(fts, snapshots=snapshots):
             conn.execute(statement)
         if promoting:
             rebuild(conn)  # index the runs created while search was substring-only
@@ -237,13 +297,10 @@ def rebuild(conn: sqlite3.Connection) -> int:
     """Drop and repopulate the search index from the tables. Returns rows indexed."""
     if search_mode(conn) != "fts":
         return 0
-    conn.execute("DELETE FROM runs_fts")
-    cursor = conn.execute(
-        f"INSERT INTO runs_fts (rowid, prompt, meta) "
-        f"SELECT m.rid, coalesce(s.initial_goal, ''), {META_TEXT} "
-        f"FROM run_meta m JOIN sessions s ON s.session_id = m.session_id "
-        f"WHERE m.deleted_at IS NULL"
-    )
+    snapshots = _snapshot_index_installed(conn) and _has_snapshot_columns(conn)
+    delete, insert = _rebuild_ddl(META_TEXT if snapshots else _LEGACY_META_TEXT)
+    conn.execute(delete)
+    cursor = conn.execute(insert)
     conn.commit()
     return cursor.rowcount
 
@@ -286,11 +343,24 @@ def migrate(db_path: str | Path) -> MigrationReport:
         ).fetchone()[0]
         count = backfill(conn) if missing else 0
         mode = search_mode(conn)
+        search_backup = _migrate_search(conn, path) if mode == "fts" else None
         if mode == "substring":
             logger.warning("SQLite FTS5 is unavailable: run search falls back to substring match")
-        return MigrationReport(count, backup, mode)
+        return MigrationReport(count, backup or search_backup, mode)
     finally:
         conn.close()
+
+
+def migrate_search(db_path: str | Path) -> None:
+    """Upgrade FTS after the snapshot migration, if this database uses FTS."""
+    with closing(sqlite3.connect(db_path, timeout=30.0)) as conn:
+        _migrate_search(conn, db_path)
+
+
+def _migrate_search(conn: sqlite3.Connection, db_path: str | Path) -> Path | None:
+    if search_mode(conn) == "fts" and _has_snapshot_columns(conn):
+        return schema_revisions.apply(db_path, FTS_MODULE, FTS_REVISIONS).backup_path
+    return None
 
 
 # -- search -------------------------------------------------------------------
@@ -325,9 +395,10 @@ def like_pattern(term: str) -> str:
     return f"%{escaped}%"
 
 
-def substring_clause(terms: list[str]) -> tuple[str, list[str]]:
+def substring_clause(terms: list[str], *, snapshots: bool = True) -> tuple[str, list[str]]:
+    meta_text = META_TEXT if snapshots else _LEGACY_META_TEXT
     clause = " AND ".join(
-        f"(s.initial_goal LIKE ? ESCAPE '\\' OR ({META_TEXT}) LIKE ? ESCAPE '\\')" for _ in terms
+        f"(s.initial_goal LIKE ? ESCAPE '\\' OR ({meta_text}) LIKE ? ESCAPE '\\')" for _ in terms
     )
     return clause, [p for t in terms for p in (like_pattern(t),) * 2]
 
@@ -339,15 +410,17 @@ def search_session_ids(conn: sqlite3.Connection, text: str) -> list[str]:
         if match is None:
             return []
         rows = conn.execute(
-            "SELECT m.session_id FROM runs_fts f JOIN run_meta m ON m.rid = f.rowid "
-            "WHERE runs_fts MATCH ? AND m.deleted_at IS NULL ORDER BY m.rid",
+            f"SELECT m.session_id, {FTS_RANK_COLUMNS} "
+            "FROM runs_fts JOIN run_meta m ON m.rid = runs_fts.rowid "
+            "WHERE runs_fts MATCH ? AND m.deleted_at IS NULL "
+            f"ORDER BY {FTS_RANK_ORDER}",
             (match,),
         )
         return [row[0] for row in rows]
     terms = substring_terms(text)
     if not terms:
         return []
-    clause, params = substring_clause(terms)
+    clause, params = substring_clause(terms, snapshots=_has_snapshot_columns(conn))
     rows = conn.execute(
         "SELECT s.session_id FROM sessions s JOIN run_meta m ON m.session_id = s.session_id "
         f"WHERE m.deleted_at IS NULL AND {clause} ORDER BY m.rid",
