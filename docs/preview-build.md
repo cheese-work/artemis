@@ -68,7 +68,10 @@ Without the named context,
 the empty `preview-node-inputs` stage has no dependency files and the copy
 fails. The frontend stage runs `npm rebuild`, explicitly runs the
 `patch-tango.mjs` postinstall via npm, then runs `npm run build`; every `RUN`
-has `--network=none`. A hook that requires network access fails the build.
+has `--network=none`. Before compilation, preview removes Google Fonts links
+from its copy of `index.html` so Angular does not fetch the stylesheet during
+optimization and the browser uses the existing font fallbacks. The live
+console keeps its fonts. A hook that requires network access fails the build.
 The preview image gets the resulting `/app/apps/showcase_ui/dist/` only from
 the offline frontend stage. Base-image import and Python installation are
 separate from this stage.

@@ -26,6 +26,7 @@ COPY apps/showcase_ui/angular.json apps/showcase_ui/tsconfig*.json ./
 COPY apps/showcase_ui/public/ ./public/
 COPY apps/showcase_ui/whats-new/ ./whats-new/
 COPY apps/showcase_ui/src/ ./src/
+RUN --network=none sed -i -E '/<link .*href="https:\/\/fonts\.(googleapis|gstatic)\.com(\/|")/d' src/index.html
 ARG ARTEMIS_BUILD_SHA
 RUN --network=none npm run build
 

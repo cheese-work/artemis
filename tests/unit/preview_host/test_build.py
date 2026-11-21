@@ -191,6 +191,7 @@ def test_preview_reachable_runs_are_offline_and_keep_the_runtime_contract():
     for expected in ("npm rebuild", "npm run postinstall", "npm run build"):
         assert any(expected in run for run in runs)
     frontend = stages["preview-frontend-builder"]
+    assert frontend.index(b"(googleapis|gstatic)") < frontend.index(b"npm run build")
     for name in (b"package.json", b"package-lock.json", b"node_modules/"):
         assert any(
             line.startswith(b"COPY --from=preview-node-inputs ")
