@@ -822,6 +822,13 @@ class TaskQueueService:
         if queue_ticket:
             env[DeviceExecutionLock.QUEUE_TICKET_ENV] = str(queue_ticket)
 
+        if smartqa_job := task_item.get("smartqa_job"):
+            if not sess_id or not target.serial or not target.endpoint.is_local_default:
+                raise ValueError("SmartQA needs a local device and a session")
+            env["ADB_DEVICE_SERIAL"] = target.serial
+            env["ARTEMIS_SMARTQA_WORKER"] = json.dumps(smartqa_job)
+            return [sys.executable, "-m", "apps.admin_console.services.agent_qa.worker"], env
+
         cmd = [
             sys.executable,
             "-m",
@@ -1694,6 +1701,7 @@ class TaskQueueService:
         now: float,
         host_id: str | None = None,
         requested_by: str | None = None,
+        debounce: bool = True,
     ) -> dict[str, Any] | None:
         """Return the short-circuit response for a duplicate submission, if any."""
         # 1. Deduplication by session_id: if session_id is already running or queued, do not re-enqueue
@@ -1717,13 +1725,15 @@ class TaskQueueService:
             if existing_item:
                 return {
                     "status": existing_item.get("status", "queued"),
-                    "tasks": [existing_item],
+                    "tasks": [
+                        {key: value for key, value in existing_item.items() if key != "smartqa_job"}
+                    ],
                     "enqueued_count": 0,
                     "total_queued": len(state.queue_tasks),
                 }
 
         # 2. Debounce duplicate rapid submissions (e.g. UI double-click or network retry within 1s)
-        if len(goals) == 1:
+        if debounce and len(goals) == 1:
             first_goal = goals[0]
             recent_duplicate = next(
                 (
@@ -1731,6 +1741,7 @@ class TaskQueueService:
                     for item in reversed(state.queue_items)
                     if isinstance(item, dict)
                     and item.get("status") == "pending"
+                    and not item.get("smartqa_job")
                     and item.get("requested_by") == requested_by
                     and item.get("goal") == first_goal
                     and (not device_serial or item.get("device_serial") == device_serial)
@@ -1914,6 +1925,7 @@ class TaskQueueService:
         bridge_session_id: str | None = None,
         model: dict[str, str] | None = None,
         model_explicit: bool = False,
+        smartqa_job: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
 
@@ -1950,7 +1962,9 @@ class TaskQueueService:
 
         enqueued_tasks = []
         now = time.time()
-        endpoint = AdbEndpoint.local() if bridge_session_id else current_adb_endpoint()
+        endpoint = (
+            AdbEndpoint.local() if bridge_session_id or smartqa_job else current_adb_endpoint()
+        )
 
         duplicate_response = cls._find_duplicate_submission(
             goals,
@@ -1960,6 +1974,7 @@ class TaskQueueService:
             now,
             host_id=host_id,
             requested_by=requested_by,
+            debounce=smartqa_job is None,
         )
         if duplicate_response is not None:
             return duplicate_response
@@ -1971,7 +1986,9 @@ class TaskQueueService:
         cls.require_admission_open()
 
         rejection_response = (
-            None if host_id else await cls._reject_unavailable_device(device_serial, endpoint)
+            None
+            if host_id or smartqa_job
+            else await cls._reject_unavailable_device(device_serial, endpoint)
         )
         if rejection_response is not None:
             return rejection_response
@@ -2026,6 +2043,8 @@ class TaskQueueService:
                 cls._fail_queued_batch(enqueued_tasks)
                 raise
             session_id = str(task_item["session_id"])
+            if smartqa_job:
+                task_item["smartqa_job"] = smartqa_job
             if model:
                 task_item["model"] = dict(model)
                 task_item["model_explicit"] = model_explicit
@@ -2127,7 +2146,10 @@ class TaskQueueService:
 
         return {
             "status": "queued" if state.is_running else "started",
-            "tasks": enqueued_tasks,
+            "tasks": [
+                {key: value for key, value in item.items() if key != "smartqa_job"}
+                for item in enqueued_tasks
+            ],
             "enqueued_count": len(goals),
             "total_queued": len(state.queue_tasks),
         }

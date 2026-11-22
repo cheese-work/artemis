@@ -31,6 +31,7 @@ class ThemeRun:
     steps: tuple[Step, ...]
     logcat_crash: str = ""
     logcat: str = ""
+    installed_apk_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,7 @@ def load_session(directory: Path) -> Session:
             ),
             logcat_crash=run.get("logcat_crash", ""),
             logcat=run.get("logcat", ""),
+            installed_apk_sha256=run.get("installed_apk_sha256"),
         )
         for name, run in raw["themes"].items()
     }

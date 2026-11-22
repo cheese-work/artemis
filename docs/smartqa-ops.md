@@ -129,7 +129,14 @@ releases the lease. Exit 0 = every theme completed, 1 = a run failed or the chec
   therefore holds the device until the lease TTL.
 - **Route.** `{"steps": [{"action": "tap|swipe|back|type", ...}]}`. A `type` step with
   `"secret": true` must carry a `${secret:NAME}` placeholder (`route_secret_literal` otherwise).
-- **Server contract still to land.** The run receives `options.smartqa` (`theme`,
-  `fresh_install`, `clear_data`, `mode` persona|route, `route`, `max_model_calls`). Applying it
-  (`cmd uimode`, `pm clear`, route replay) belongs to the worker and the restricted command
-  gate (CHE-2129); the lease endpoints belong to CHE-2099.
+- **Worker evidence (CHE-8999).** Use `--route` and an unrestricted lease on a confirmed local
+  emulator in the server-owned `x99-avd` pool. Restricted devices, persona runs, and
+  secret-backed route steps are refused. Use disposable test data on this emulator.
+  The worker installs the uploaded APK, clears app data, applies the selected theme and
+  restores the previous mode on exit. It makes no model calls. Match manifest screen IDs
+  to app resource ID suffixes; ambiguous or absent matches remain unclassified.
+  Each theme has its own run trace with `smartqa/session.json` and relative Before/After PNGs.
+  `load_session()` reads the steps, text bounds, package-specific crash/ANR markers and
+  `themes[theme].installed_apk_sha256`. The installed APK is hashed before and after the route;
+  the worker publishes no evidence for a mismatched or unverifiable APK. A report link and
+  APK-bound green verdict are separate work (CHE-8997).
