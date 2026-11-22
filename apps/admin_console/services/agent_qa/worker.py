@@ -23,6 +23,7 @@ from apps.admin_console.schemas.task_schema import SmartQAOptions, SmartQARouteS
 from apps.admin_console.services.agent_qa.session import Step, ThemeRun
 from artemis.runtime import DeviceExecutionLock, trace_store
 from artemis.runtime.cancel_requests import is_cancel_requested
+from artemis.runtime.device_lock import DeviceBusyError
 from artemis.runtime.endpoint_transport import EndpointTransport
 
 
@@ -298,6 +299,8 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     try:
         envelope = json.loads(os.environ.pop("ARTEMIS_SMARTQA_WORKER"))
+        if not isinstance(envelope, dict) or not isinstance(envelope.get("package"), str):
+            raise ValueError("Invalid SmartQA worker envelope")
         options = SmartQAOptions.model_validate(envelope["options"])
         serial = os.environ["ADB_DEVICE_SERIAL"]
         session_id = os.environ["ARTEMIS_SESSION_ID"]
@@ -325,7 +328,7 @@ def main() -> int:
     except AdminAPIError as exc:
         print(exc.code, flush=True)
         return 1
-    except Exception:
+    except (KeyError, ValueError, OSError, DeviceBusyError):
         print("smartqa_worker_failed", flush=True)
         return 1
     return 0

@@ -3,7 +3,7 @@ from io import BytesIO
 import json
 from pathlib import Path
 from subprocess import CompletedProcess
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from PIL import Image
@@ -19,6 +19,7 @@ from apps.admin_console.services.agent_qa.session import load_session
 from apps.admin_console.services.device_leases import Lease
 from apps.admin_console.services.task_queue_service import TaskQueueService
 from artemis.runtime.adb_endpoint import AdbEndpoint, AdbTarget
+from artemis.runtime.device_lock import DeviceBusyError
 
 
 PACKAGE = "example.app"
@@ -189,6 +190,40 @@ def test_queue_forwards_dark_route_to_worker():
     assert env["ADB_DEVICE_SERIAL"] == SERIAL
     assert env["ARTEMIS_SESSION_ID"] == "session"
     assert json.loads(env["ARTEMIS_SMARTQA_WORKER"]) == job
+
+
+@pytest.mark.parametrize("envelope", ["private invalid JSON", "null", '{"package":"example.app"}'])
+def test_main_reports_invalid_envelope_without_exposing_input(monkeypatch, capsys, envelope):
+    monkeypatch.setattr(worker.signal, "signal", Mock())
+    monkeypatch.setenv("ARTEMIS_SMARTQA_WORKER", envelope)
+    assert worker.main() == 1
+    assert capsys.readouterr().out == "smartqa_worker_failed\n"
+
+
+@pytest.mark.parametrize("error_type", [DeviceBusyError, OSError, AssertionError])
+def test_main_handles_expected_lock_errors_and_releases_lock(monkeypatch, capsys, error_type):
+    job = {
+        "options": request_payload()["options"]["smartqa"],
+        "holder": "owner",
+        "package": PACKAGE,
+    }
+    monkeypatch.setattr(worker.signal, "signal", Mock())
+    monkeypatch.setenv("ARTEMIS_SMARTQA_WORKER", json.dumps(job))
+    monkeypatch.setenv("ADB_DEVICE_SERIAL", SERIAL)
+    monkeypatch.setenv("ARTEMIS_SESSION_ID", "session")
+    monkeypatch.setattr(worker.EndpointTransport, "current", FakeTransport)
+    lock = Mock()
+    lock.acquire.side_effect = error_type("private details")
+    monkeypatch.setattr(worker, "DeviceExecutionLock", Mock(return_value=lock))
+
+    if error_type is AssertionError:
+        with pytest.raises(AssertionError):
+            worker.main()
+        assert not capsys.readouterr().out
+    else:
+        assert worker.main() == 1
+        assert capsys.readouterr().out == "smartqa_worker_failed\n"
+    lock.release.assert_called_once()
 
 
 @pytest.mark.asyncio

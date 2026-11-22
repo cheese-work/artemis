@@ -1727,6 +1727,8 @@ class TaskQueueService:
                     "status": existing_item.get("status", "queued"),
                     "tasks": [
                         {key: value for key, value in existing_item.items() if key != "smartqa_job"}
+                        if "smartqa_job" in existing_item
+                        else existing_item
                     ],
                     "enqueued_count": 0,
                     "total_queued": len(state.queue_tasks),
@@ -2148,6 +2150,8 @@ class TaskQueueService:
             "status": "queued" if state.is_running else "started",
             "tasks": [
                 {key: value for key, value in item.items() if key != "smartqa_job"}
+                if "smartqa_job" in item
+                else item
                 for item in enqueued_tasks
             ],
             "enqueued_count": len(goals),
