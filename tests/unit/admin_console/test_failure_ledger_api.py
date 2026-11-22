@@ -879,6 +879,62 @@ async def test_goal_word_redaction_does_not_split_defect_keys_or_leak_cause(libr
     assert "Tap" not in second_row["evidence"]
 
 
+@pytest.mark.parametrize(
+    ("goal", "detail", "expected_detail"),
+    [
+        (
+            "Open Settings, tap Wi-Fi and check the device name",
+            "on this device action button in Settings",
+            "on this device action button in [goal redacted]",
+        ),
+        (
+            "Open Settings, tap Wi-Fi and check the device name",
+            "during tap Wi-Fi and check",
+            "during [goal redacted]",
+        ),
+        (
+            "Open Settings, tap Wi-Fi and check the device name",
+            "on the device action button",
+            "on [goal redacted] action button",
+        ),
+        (
+            "Open Settings, tap Wi-Fi and check the device name",
+            "while trying: OPEN  SETTINGS,\ttap Wi-Fi and CHECK the DEVICE name",
+            "while trying: [goal redacted]",
+        ),
+        (
+            "tap device then open app",
+            "while trying to tap device",
+            "while trying to [goal redacted]",
+        ),
+        (
+            "tap redacted settings",
+            "with token=unredactedvalue",
+            "with token=[REDACTED]",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_goal_redaction_keeps_isolated_ledger_words_readable(
+    library, admin, goal, detail, expected_detail
+):
+    prefix = "Tap failed at (540, 1200)"
+    sid = seed_run(
+        library,
+        status="completed",
+        goal=goal,
+        steps=[("click", _bad(f"{prefix} {detail}"))],
+    )
+
+    await collect(admin)
+
+    view = await failures(admin)
+    (row,) = by_session(view, sid)
+    cause = next(cause for cause in view["causes"] if sid in cause["run_ids"])
+    assert row["evidence"] == cause["evidence_excerpt"] == f"{prefix} {expected_detail}"
+    assert goal.casefold() not in json.dumps(view).casefold()
+
+
 @pytest.mark.asyncio
 async def test_api_omits_goal_words_from_cause_when_error_names_goal_label(library, admin):
     goal = "Settings"
@@ -931,7 +987,7 @@ def test_defect_key_uses_category_and_normalizes_device_identifiers():
 
 @pytest.mark.asyncio
 async def test_ledger_migration_preserves_existing_rows(library, admin):
-    goal = "legacy private goal"
+    goal = "legacy private device"
     sid = seed_run(library, status="completed", goal=goal)
     occurred = time.time()
     with sqlite3.connect(library.db) as conn:
@@ -960,8 +1016,8 @@ async def test_ledger_migration_preserves_existing_rows(library, admin):
             "'empty_target_list', ?, ?, ?, 'browser', ?, ?, ?)",
             (
                 sid,
-                f"legacy-cause|{goal}",
-                f"legacy evidence {goal}",
+                "legacy-cause|device needs service",
+                f"legacy evidence {goal} on the device action button",
                 SERIAL,
                 "qa@example.com",
                 occurred,
@@ -989,6 +1045,14 @@ async def test_ledger_migration_preserves_existing_rows(library, admin):
     rows = by_session(view, sid)
 
     assert [row["signal"] for row in rows] == ["run_step", "run_step"]
+    step = next(row for row in rows if row["scope"] == "step")
+    assert (
+        step["evidence"] == "[goal redacted] evidence [goal redacted] on the device action button"
+    )
+    step_cause = next(cause for cause in view["causes"] if cause["scope"] == "step")
+    assert step_cause["defect_key"] == failure_ledger._defect_key(
+        "smartqa_agent", "empty_target_list", "legacy-cause|[goal redacted] needs service"
+    )
     assert goal not in json.dumps(view)
     with sqlite3.connect(library.db) as conn:
         columns = {record[1] for record in conn.execute("PRAGMA table_info(failure_ledger)")}
