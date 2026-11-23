@@ -33,7 +33,11 @@ class BrokerAdmission:
                 principal=identity["principal"],
                 run_id=identity["run"],
             )
-            if group["state"] != "active" or group["binding"].get("mode") != "remote":
+            if (
+                group["state"] != "active"
+                or group["access_phase"] != "work"
+                or group["binding"].get("mode") != "remote"
+            ):
                 return None
             with sqlite3.connect(self.broker.db_path) as conn:
                 context = conn.execute(

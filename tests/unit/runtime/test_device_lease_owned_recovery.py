@@ -66,11 +66,42 @@ class OwnedRecoveryTests(unittest.TestCase):
 
         return OwnedRecovery(self.path)
 
+    def test_adb_empty_listing_newline_is_empty_but_malformed_row_is_refused(self):
+        adapter, group = self.adapter(), self.take(device_id="a")
+        for direction in ("forward", "reverse"):
+            with self.subTest(direction=direction):
+                with patch.object(adapter, "_adb", return_value="\n"):
+                    self.assertEqual(adapter._forwards(group, "a", direction, 2), {})
+                with patch.object(adapter, "_adb", return_value="malformed\n"):
+                    with self.assertRaises(ValueError):
+                        adapter._forwards(group, "a", direction, 2)
+
     def group(self, tracking=True):
         group = self.take(device_id="a")
         if tracking:
             self.record(group, self.work())
         return group
+
+    def test_managed_binding_reuses_local_host_fence_checks(self):
+        group = self.group()
+        group["binding"] = {**IDENTITY, "mode": "managed", "binding_id": "a" * 64}
+        adapter = self.adapter()
+        live = {IDENTITY["pid"]: IDENTITY}
+
+        def stop(identity, timeout):
+            self.assertEqual(identity, IDENTITY)
+            live.pop(identity["pid"])
+            return True
+
+        with (
+            patch.object(adapter, "_daemon_pid", return_value=999),
+            patch.object(adapter, "_identity", side_effect=lambda pid: live.get(pid)),
+            patch.object(adapter, "_descendants", return_value=set()),
+            patch.object(adapter, "_stop", side_effect=stop) as stopped,
+            patch.object(adapter, "_forwards", return_value={}),
+        ):
+            self.assertTrue(adapter.fence(group, timeout=2))
+            stopped.assert_called_once()
 
     def test_missing_tracking_unknown_work_pid_reuse_and_daemon_never_signal(self):
         adapter = self.adapter()

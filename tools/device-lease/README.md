@@ -76,6 +76,52 @@ python3 tests/unit/runtime/test_device_registry.py -v
 
 The same tests are discovered by the repository's normal pytest unit suite.
 
+## AVD lifecycle metadata (source schema only)
+
+`kind` defaults to `physical` for existing records. Physical records cannot use
+pool `avd` or carry AVD lifecycle fields. A snapshot may additionally contain
+**one** record with `kind="avd"` and `pool="avd"`. It uses the same canonical
+registry, queue and SQLite occupancy as physical devices; aliases add no slots.
+This schema change does not edit the live ten-device fleet or release an old AVD.
+
+The synthetic complete example is
+[`tests/fixtures/device_lease/avd.json`](../../tests/fixtures/device_lease/avd.json).
+Its paths, names, digests and ports are fixtures, not verified target bindings.
+Required AVD fields are:
+
+| Fields | Validation / meaning |
+| --- | --- |
+| `avd_name` | Literal AVD name: leading alphanumeric, then alphanumeric, `_`, `.` or `-`; never a path or command. |
+| `avd_data_path` | Absolute canonical real data-directory path, with no symlink alias, traversal or trailing separator. |
+| `avd_definition_path` | Absolute canonical path of the trusted AVD definition (`.ini`). |
+| `console_port`, `adb_port` | Fixed integer pair: even console port 5554–5682 and ADB port equal to console + 1. Booleans and strings are invalid. |
+| `aliases` | Must contain `emulator-<console_port>`; may also contain `127.0.0.1:<adb_port>`. No duplicates or other endpoints. The canonical ID must differ from both endpoints. |
+| `api`, `abi` | Positive integer API and nonempty trimmed ABI; no inferred guest identity. |
+| `emulator_path`, `emulator_sha256` | Canonical absolute emulator executable path and pinned lowercase SHA-256. |
+| `config_sha256`, `image_sha256` | Pinned lowercase SHA-256 of `config.ini` and the immutable system-image manifest (binding the image files and their digests). |
+
+All three paths must equal their resolved spelling on the loading host; existing
+symlink prefixes are rejected. Paths may be absent: loading metadata does not
+verify file existence, contents, open userdata, process ownership or port state.
+Hashes are expected identities, not evidence that a binary or image was checked.
+The trusted lifecycle worker must independently verify those bindings before use
+and revalidate them to prevent path/process replacement. Missing or malformed
+metadata rejects the complete snapshot. Different names, paths or port pairs
+cannot create a second AVD record.
+
+AVD records default to restricted and identity-unconfirmed, just like physical
+records. `eligible()` currently refuses **every AVD**, including a record with
+`identity_confirmed=true` paired with a `device` observation or an injected
+ordinary admission map. Metadata can describe a powered-off slot without
+fabricating an actual device or admitting work. Startup-only admission, launch,
+identity evidence, scoped qualification/work promotion and recovery are subsequent
+layers; this source change exposes no boot command or startup grant. Shared ADB
+remains `127.0.0.1:5037`; neither fixed endpoint is an ADB server control address.
+
+```sh
+python3 tests/unit/runtime/test_device_registry_avd.py -v
+```
+
 ## Broker core
 
 `broker.py` owns a SQLite lease-group domain. `device_lease` is the small shared
@@ -124,6 +170,150 @@ the original response; a changed operation or arguments raises
 `idempotency_conflict`. Refusals do not consume a key. An idempotent replay is a
 historical response, never a new access grant: use `status` to read current state.
 Checks at the eventual gateway must use current state, expiry and authority.
+
+### Startup admission (CHE-6325, source only)
+
+The private leader control socket accepts `start` and `claim-startup`. The holder
+socket exposes neither operation and `acquire` accepts no access-phase flag.
+`start` takes the ordinary holder/context fields, a required canonical AVD or
+endpoint alias, and a managed binding reference. Local shell and remote labels
+cannot authorize startup. `count` must be one.
+
+The existing group remains `active` with persisted `access_phase: starting`.
+`startup` in its readback stores the complete pinned registry device, authority
+generation, scoped grant and independently verified prior release. Managed
+principal, agent, issue, task, PID, process start and boot identity remain in the
+existing binding and context records. The first grant starts the usual TTL and
+hard cap. Startup renewal and work mutations refuse `access_phase_denied`.
+General R1/ADB access also requires `access_phase: work`; registry readiness
+continues to reject every offline, starting or unconfirmed AVD.
+
+Owner composition may add `startup: {"path": "/owner/startup.json",
+"max_age_seconds": 60}` together with `managed_bindings_dir`. The private owner
+file has exactly these fields:
+
+```json
+{
+  "generation": 1,
+  "device": "the complete registry Device object, not an endpoint string",
+  "principal": "executor-agent",
+  "agent_id": "executor-agent",
+  "issue_id": "execution-issue",
+  "run_id": "live-task",
+  "grant": {"reference": "scoped-startup-grant", "observed_at": 100000, "expires_at": 100900},
+  "release": {"verifier": "configured-leader", "holder": "prior-holder", "evidence": "independent-release-reference", "passed": true}
+}
+```
+
+Numeric times above are synthetic epoch values. The verifier must be the
+configured leader and differ from both the former holder and current executor.
+The generation must match the broker authority. Missing, malformed, stale or
+expired evidence closes startup. A separate fresh complete ClaimLedger census,
+both writer sources, the shared claims guard, canonical occupancy, FIFO conflicts
+and restart reconciliation are still required. All owner-file and process reads
+occur before the SQLite writer transaction.
+
+Startup tickets share the existing queue. A ticket or offer grants no access.
+After parking, a new managed run needs a fresh scoped owner grant to use
+`claim-startup`; ordinary `claim` refuses startup tickets. Idempotent retries
+return the same lease and deadlines and do not repeat the `startup:committed`
+boundary. This boundary is a test hook after commit, not a launch implementation.
+Without an explicitly configured worker, `launch_startup` still refuses
+`startup_launch_unavailable`. No promotion to work or live activation is included.
+
+### Journalled startup and identity (CHE-6326, source only)
+
+The owner control socket additionally accepts `launch-startup` and
+`verify-startup`, each with `lease_id`, `principal` and `run_id`. Neither exists on
+the holder socket. A grant reference in status is visible audit data, not a
+credential: launch revalidates the current owner proof, live managed run, lease,
+authority, writer census and guard. Verification never changes the access phase.
+
+The shared claims guard covers this sequence; process/file/socket I/O stays
+outside SQLite writer transactions:
+
+1. Check the scoped host preflight, pinned artifacts, free fixed ports and no open
+   AVD. Commit a `planned` row to `broker_launches` before spawning anything.
+2. Start one trusted worker with a child blocked on a private pipe before exec.
+   Commit both PID/start-time/boot-ID records as `paused`, together with the
+   existing `broker_changes` work manifest. A failed journal closes the pipe and
+   the child exits without running the executable.
+3. Recheck admission and resource ownership. Commit `executing`, then confirm the
+   lease and paused identities are still valid before releasing the pipe once.
+   The child keeps its journalled PID across exec. The worker remains its parent
+   and reaps it.
+4. Verify the actual child and parent, real AVD definition/data path, opened
+   `userdata-qemu.img`, fixed socket owners and exact serial. Only after those
+   checks and a real `device` row may four fixed serial-specific property probes
+   read AVD name, API, ABI and boot completion. Recheck process ownership after
+   probes. A mismatch fences the group and retains occupancy.
+
+An unconfirmed boot is not itself an identity disagreement. Missing sockets
+during boot, an absent/offline serial and incomplete boot return `startup_not_ready`.
+Failed ADB probes, timeouts, unreadable process evidence and other uncertain
+observations return `startup_observation_unavailable`. These refusals do not
+themselves fence an otherwise live starting lease. A retry
+must perform the complete observation again; it never spawns another child.
+Wrong guest name/API/ABI, replaced process identity, changed pinned artifacts,
+wrong command-line paths/ports and positively attributed competing owners still
+return `startup_identity_mismatch` and fence occupancy.
+
+`(generation, grant_ref)` is consumed once when the planned attempt commits.
+Duplicate calls after `executing` return the journal without another gate release.
+A crash, journal failure or uncertain attempt before execution returns
+`startup_launch_uncertain`; recovery must reconcile it before a new grant/attempt.
+Neither retries nor verification alter the original TTL or hard deadline. A stored
+identity is historical evidence: later promotion must call `verify_startup` again
+and separately validate its qualification/work authority and execution lock.
+
+The Linux adapter adapts the existing Popen launch primitive, with fixed `-avd`,
+`-datadir`, `-data` and `-ports`, plus `-no-snapshot` and `-no-snapshot-load`.
+It preserves existing userdata, requires the configured emulator/config digests
+and the `system.img` digest from `image.sysdir.1`, and refuses uncertain `/proc`
+visibility. It never adopts an old process or changes ports. Its raw loopback
+smart sockets cannot start ADB and expose no server-control or global-disconnect
+operation. Kernel TIME_WAIT rows (inode 0) have no live socket and are excluded
+from ownership. Live bound/listening sockets with an unseen owner still block.
+The worker and child both allow 120 seconds for journalling and artifact rechecks
+before the gate expires. EOF aborts immediately. Child stdin/stdout use read/write
+`/dev/null` without an extra descriptor.
+Full artifact hashing and bounded handshakes can refuse a slow host;
+this adapter still needs separate live qualification before activation.
+
+Opt-in owner composition extends the existing `startup` section:
+
+`linux-paused` requires effective UID 0 with full host PID and `/proc` visibility.
+Composition rejects this worker for a non-root process before serving requests.
+Even root must be able to inspect every relevant process descriptor; unreadable
+entries refuse observation rather than being skipped. The existing user-service
+deployment cannot enable this adapter as configured. A separately admitted
+privileged deployment is required before activation; this source change grants
+no privilege, changes no unit and enables no live worker. Without the worker
+setting, user-service composition continues to expose no launch capability.
+
+```json
+{
+  "path": "/owner/startup.json",
+  "max_age_seconds": 60,
+  "worker": {
+    "adapter": "linux-paused",
+    "host_preflight": {"path": "/owner/shared-adb.json", "max_age_seconds": 60}
+  }
+}
+```
+
+The private `shared-adb.json` has exactly `observed_at` (epoch seconds), `host`
+(`127.0.0.1`), `port` (`5037`), a nonempty ops `evidence` reference, and `listener`
+(`mode: local`, integer `pid`, string `process_start` and `boot_id`). The adapter
+rechecks that this exact process owns the shared socket. Missing, stale or
+uncertain evidence blocks before spawn. No running service/configuration is
+changed by this source implementation; expiry/restart reconciliation and later
+phase/claim/SDK handoffs remain the following stages.
+
+Startup offers now require the proof to match the ticket's bound run as well as
+its principal/agent/issue/device. A parked ticket has no live bound run. A new
+managed run validates its fresh proof through `claim-startup`, then offers and
+claims atomically; an unrelated run's proof cannot reserve the slot.
 
 Release or observed expiry changes `active` to `fencing`; it never deletes
 ownership. The trusted recovery worker can compare-and-set `fencing` -> `cleaning`
@@ -225,7 +415,8 @@ directory, database or socket is created:
   "android_claims": {"source": "ledger", "max_age_seconds": 300},
   "guard_path": "/private/state/claims.guard",
   "recovery": {"adapter": "owned", "owner": "OPS_OWNER", "ops_issue": "CHE-NNNN"},
-  "leader_control_socket": "/private/leader/control.sock"
+  "leader_control_socket": "/private/leader/control.sock",
+  "leader_id": "CURRENT_ANDROID_ADMISSION_LEADER_ID"
 }
 ```
 
@@ -365,7 +556,8 @@ command, ADB server reset or policy change is performed by the hermetic tests.
    `verifying`. Preserve lease id, run binding, audit and cleanup evidence for the
    Android squad leader. Only the trusted leader control plane calls
    `verify_release(lease_id, verifier=LEADER_ID, evidence=REFERENCE, passed=True)`.
-   `LEADER_ID` is `5cd75ce5-d323-4004-9779-7e2ccf16bde4` under the current policy.
+   `LEADER_ID` must match the owner-configured `leader_id`. A role identity change
+   requires an explicit composition update; the retired identity is then refused.
    A failed verdict quarantines. The named recovery owner can supply evidence
    using `recover_quarantine`; this returns only to `verifying`, never directly
    to availability. A successful leader verdict records `released`. No TTL-only
@@ -737,6 +929,31 @@ changes (including legacy HOME without comparable state) quarantine. Recovery
 never resets a device or restarts ADB. Raw local ADB remains cooperative.
 This adapter accepts local bindings only; remote bindings fail closed.
 
+### Startup-origin AVD recovery (CHE-6327, source only)
+
+The daemon commits its restart fence before listening. The broker fences a
+startup-origin lease on expiry, revoke, lost managed holder, authority change
+or lost/replaced launch binding. Work-phase checks also require a verified
+binding and the existing shared ADB listener. A retry cannot revive an active
+response for a fenced lease, release the gate twice or extend the original TTL
+or hard cap. This change does not promote a lease or authorize work access.
+
+Recovery uses the pinned AVD, launch journal and matching work manifest. It
+checks PID, start ticks, boot ID and descendants before signaling. It stops
+only exact journalled child and worker identities using pidfds, with no ADB
+commands, data reset or restoration of guest state. A complete host resource
+check and a clean startup fence can move the lease only to `verifying`. A
+planned-only or inconsistent journal, reused PID, unknown owner, timed-out
+fence, interrupted cleanup or work-phase guest state requiring restoration
+stays `quarantine`. Recovery does not extend the AVD cleanup window on restart.
+
+The configured `recovery_owner` owns quarantine and records cleanup evidence
+under the configured `ops_issue`. Quarantine recovery can only move to
+`verifying`. The configured Android authority (`leader_id`), independent of
+the holder, executor and recovery owner, must verify release through the
+private control socket. Process absence, readiness, restart reconciliation and
+elapsed TTL never release the canonical slot. Live activation remains separate.
+
 ### Owner producer operations and activation
 
 The following commands are owner operations, not holder RPCs. Use the same
@@ -748,7 +965,7 @@ that are not group/world writable. Run `device-lease OP --help` for exact flags.
 | Operation | Additional flags | Result |
 | --- | --- | --- |
 | `write-readiness` | `--input OBSERVATIONS.json` | Validate and atomically publish per-device grants and observations |
-| `census-android-claims` | `--input CENSUS.json` | Attest a complete writer census and generation |
+| `census-android-claims` | `--input CENSUS.json [--validate-reload]` | Attest a complete writer census, or preview a replacement without publishing |
 | `claim-android` | `--device-id ALIAS --owner OWNER --run-id RUN --reference AUDIT_REF` | Return owned claim ID, or refuse occupancy |
 | `release-android` | `--claim-id ID --owner OWNER --run-id RUN` | Remove only that owned claim |
 | `list-android-claims` | none | Read source metadata and all authoritative claim rows, including stale state |
@@ -780,3 +997,220 @@ admission; deleting an unknown lock is not a census.
 
 This implementation makes no host config change and leaves admission closed.
 Do not copy fixture census, process IDs or grant references into the live fleet.
+
+### X99 freshness timer (CHE-5042)
+
+After reconciling existing claims with `census-android-claims`, the trusted owner
+can run `device-lease refresh --composition FILE --registry FILE --state-dir DIR
+--host-config FILE` from a user systemd oneshot timer. The owner-only host file is:
+
+```json
+{
+  "devices": ["CONFIRMED_UNRESTRICTED_RIG_SERIAL"],
+  "reference": "CHE-authorized-per-device-grants",
+  "expires_at": 1794646800,
+  "writers": [{"unit": "artemis-qa.service", "sdk_lock": "/path/to/artemis/runtime/device_lock.py"}],
+  "isolated_writers": [{"unit": "artemis-qa-staging.service", "adb_path": "/path/to/disabled/adb", "sha256": "EXACT_DISABLED_WRAPPER_DIGEST"}]
+}
+```
+
+`isolated_writers` may be empty. The owner attests that these lists cover every
+supported fleet launcher. This does not detect arbitrary same-user Python imports
+or defend against bypassing cooperative launchers. Future user services should
+inherit the same guard/database settings. Direct SDK launchers must set both.
+A guarded writer must use the configured SDK lock directory and contain the SDK
+admission check. Disabled staging must retain both wrapper environment settings
+and the exact owner-approved wrapper digest; this command never enables staging.
+
+Refresh takes the shared flock from observations through both owner commits. It
+checks live service environments, reads only `host:devices-l` from the existing
+loopback ADB server on port 5037, and grants only configured confirmed rig rows.
+It never starts ADB or sends device commands. Grants expire at the fixed owner
+expiry, not a new rolling expiry on every refresh. Removing a serial revokes it
+at the next refresh. Existing ledger claims are carried forward verbatim; initial
+census is mandatory. A failed observation invalidates the census immediately.
+Stopping the timer closes admission when source freshness expires. Run every
+20 seconds with a 60-second readiness age; serialize refreshes with the same
+flock. No lock or lease is held between timer invocations.
+
+### AVD phase grants and reload preview (CHE-6328)
+
+The physical `host-config` fields, fixed expiry and output rows do not change.
+Do not put an AVD in `devices` or in the ordinary `write-readiness` input. The
+startup snapshot remains the startup grant, scoped to the pinned AVD and live
+executor run, with independent prior release. It does not authorize guest probes.
+
+To prepare separate phase grants, set the optional composition field
+`"avd_grants": {"path": "/path/to/avd-grants.json", "max_age_seconds": 60}`.
+It requires startup composition and the registered AVD. Its owner-only JSON
+array contains at most one row per `identity`, `qualification` or `work` phase:
+
+```json
+[
+  {
+    "phase": "identity",
+    "device_id": "CANONICAL_AVD_ID",
+    "endpoint": "emulator-5584",
+    "lease_id": "COMMITTED_STARTUP_LEASE_ID",
+    "generation": 1,
+    "reference": "AUTHORITY_EVIDENCE_REFERENCE",
+    "observed_at": 1794646740,
+    "expires_at": 1794646800
+  }
+]
+```
+
+The endpoint in the example is a fixture, not an approved target. The grant's
+generation is the broker authority generation from the startup proof, not the
+writer census generation. The lease binds the grant to the same executor run;
+references alone are not credentials. Expiry is fixed by the source. An absent,
+invalid or expired identity grant refuses `verify-startup` before guest probes.
+Refresh uses the actual ADB `device` row for the exact serial, fresh identity from
+the broker launch journal, current process binding and the matching qualification
+or work grant. It reports these separately as `avd_readiness` in owner readback.
+No row in that output grants a lease, enables ordinary allocation, or completes
+the qualification or work handoff. An idle or unverified AVD has no such row.
+
+### Claim and SDK work handoff (CHE-6329)
+
+When the startup executor already owns an Android claim, the owner can record
+explicit consent in the owner-only startup snapshot as `claim_handoff` with
+`claim_id`, `owner`, `run_id`, `census_generation` and a consent `reference`.
+The claim owner and run must match the scoped startup proof and the live ledger
+row. The census generation must still be current and fresh. Under `claims.guard`,
+the broker moves the original claim and consent to `android_claim_handoffs` in the
+same transaction as the new occupying lease. A foreign SDK lock or reservation
+still blocks admission. A failed transaction leaves the original claim active.
+
+Before use, the `qualification` or `work` grant must also carry `testcase` with
+`author`, a SHA-256 `revision`, and exactly two `reviews`. Each review has a
+distinct independent `reviewer` and `reference`, the same `revision`, and a
+`verdict` of `PASS`. The authority supplies the required reviews in this trusted
+source. `work` also requires a `qualification` reference to independently
+verified qualification; the first `qualification` does not. Keep the separate
+`identity` grant live while the SDK revalidates device and boot evidence.
+
+Only for a separately admitted executor, the launcher supplies
+`ARTEMIS_DEVICE_LEASE_HANDOFF` as a JSON object with `socket` (absolute holder
+socket path), `lease_id`, canonical `device_id`, `issue_id`, authority `generation`
+and `phase` (`qualification` or `work`). The SDK keeps both claim guard variables
+and the existing `MULTICA_*` managed run binding. Initialize the SDK with the
+exact leased serial and shared `127.0.0.1:5037`; this is not a cloud/chat route.
+The broker checks the socket peer is the managed root or its live descendant,
+rechecks guest identity and boot, and installs the execution lock under the
+claim guard before committing the same lease to `work`. The SDK reads back the
+committed lock before probing the device. No bare lease ID or other alias earns
+an exception. Normal SDK ownership checks still apply outside this route.
+
+There is no added TTL, renewal, allocator, or independent managed-run registry.
+Loss of the admitted grant, live peer, lock, or verified host binding fences the
+lease. On restart every startup-origin lease is fenced before requests are
+served. Uncertain work cleanup stays quarantined and holds the slot until named
+recovery and independent release verification. No live admission, qualification
+or activation is implied by this source change.
+
+**Checklist for a separately admitted activation (not executed here):**
+
+1. Confirm reviewed default-branch SHA, independently verified prior release,
+   Android-authority admission, and the verified name, data path, process and
+   fixed endpoint pins. Pin the X99-built artifact by that SHA and its verified
+   digest; record the previous running SHA and rollback digest.
+2. Stage the owner-only registry and composition files. Confirm the physical
+   grants, claim/SDK guards, shared ADB and managed run binding remain unchanged.
+   Attest a fresh census covering both writers, with a strictly higher
+   generation and every live claim unchanged under its canonical ID.
+3. Drain and reconcile non-released groups and outstanding offers before any
+   lifecycle configuration change. A quarantined group is still occupied;
+   never delete it or use expiry to bypass reconciliation. Without a lifecycle
+   change, a new census preserves quarantine in the same database.
+4. With the same guard, state database and lock directory, validate the staged
+   inputs with `census-android-claims --validate-reload --composition FILE
+   --registry FILE --state-dir DIR --input CENSUS.json`. This read-only preview
+   does not publish the census, change broker state or reserve the drain.
+5. Only under the separate admission, keep admission closed, recheck the drain,
+   then apply the validated inputs and restart using the reviewed artifact.
+   Registry and composition are loaded at `serve` startup, not on JSON edits.
+   Read back the running process's artifact SHA and digest, the loaded census
+   generation, claims, canonical aliases, group states, and shared ADB listener.
+   If readback differs, keep admission closed and use the separately approved
+   rollback procedure. Do not start or restart ADB.
+
+The private leader socket remains the release boundary. `leader_id` is an
+explicit cooperative role check, not a credential. The in-process Broker's
+historical default is retained for callers outside live composition; production
+composition always requires a configured identity.
+
+## Managed Multica host binding (CHE-5868)
+
+Producer contract pin: `cheese-work/multica@6d95bc618617c20baa7e1e2d9ccf9991d9e7d3cc`,
+[draft PR 1643](https://github.com/cheese-work/multica/pull/1643).
+
+A Codex shell can see PID 1 inside its tool namespace. That PID is not a host
+holder identity. The managed local route accepts an opaque launcher reference
+instead of probing the shell's `/proc` or borrowing a daemon PID.
+
+This route is **off by default**. It requires separately deployed Multica launcher
+support and owner configuration on both sides. The owner selects one existing
+0700 directory outside task writable roots with `MULTICA_RUN_BINDINGS_DIR` in
+the Multica daemon environment and `managed_bindings_dir` in the broker's private
+composition JSON. Both services must run as the same owner in the same host PID
+namespace. A bad configured directory fails startup; an absent setting preserves
+the existing local PID route and refuses managed references. This change does
+not edit an installed composition, restart a service or admit a device.
+
+The native launcher allocates a 256-bit random `MULTICA_RUN_BINDING_ID` per launch
+attempt. It publishes `<id>.json` (0600) atomically only after successful start.
+Version 1 has exactly these fields:
+
+```text
+version=1, binding_id, agent_id, principal, task_id, issue_id,
+pid, process_start, boot_id, pid_namespace
+```
+
+`principal` is the trusted task's agent ID. `task_id` is the exact Multica task ID,
+not the issue ID or a caller-invented run label. `pid` is the launcher's actual
+child process root in its host namespace, with Linux start ticks and boot ID.
+Exec wrappers retain this PID. A waiting wrapper counts only while it remains
+alive; detached children cannot extend its binding. The launcher revokes on
+cancellation, failed startup and lifecycle exit. Dead or reused holders fail
+independent broker probes even if a stale file remains.
+
+`acquire` and `claim` accept mutually exclusive `--pid` or `--managed-binding`.
+For an admitted CHE-5792 run, the managed arguments are:
+
+```sh
+--principal "$MULTICA_AGENT_ID" --agent-id "$MULTICA_AGENT_ID" \
+--issue-id CHE-5792 --run-id "$MULTICA_TASK_ID" \
+--managed-binding "$MULTICA_RUN_BINDING_ID"
+```
+
+These are arguments to the existing CLI, not an admission or an instruction to
+acquire now. Pool, purpose, ticket, idempotency key and the device grants still
+follow their existing contracts. Managed mode never calls client-side
+`process_identity`. RPC clients cannot choose the registry path or submit an
+alternate host PID. The broker resolves the reference, checks the entire
+agent/task/principal/issue association, then independently checks namespace,
+boot, start time and process liveness. Missing, malformed, unsafe or replaced
+records fail closed. Concurrent tasks cannot accidentally use each other's
+reference. Maintenance re-resolves the exact persisted record before the writer
+lock, fences active groups and parks queued/offered bindings on revocation.
+
+Owned recovery uses the resolved host root with all existing complete-work
+journal, descendant, PID-reuse, daemon-exclusion and leader-release checks.
+No automatic journal or cleanup permission is inferred from a managed binding.
+Uncertain recovery still quarantines. Same-UID labels and private files remain
+cooperative, not authentication against the host owner. Credential-isolated or
+remote execution uses the separately gated R1 route (CHE-4513); this is not a
+relay or a substitute for R1 activation.
+
+Offline checks use synthetic inventory only:
+
+```sh
+python3 -B tests/unit/runtime/test_device_lease_managed_runs.py -v
+```
+
+For cross-repository proof, Multica's `TestBindingNestedNamespace` accepts
+`ARTEMIS_MANAGED_BINDING_PROBE` pointing to this checkout's
+`tests/unit/runtime/managed_binding_contract_probe.py`. The probe uses only a
+temporary database and fake inventory: publish, resolve, synthetic grant,
+revoke, fence. It does not connect to an installed broker or device.

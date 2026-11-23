@@ -1,0 +1,7 @@
+{
+  "id": "2026-11-22-run-search-details",
+  "date": "2026-11-22",
+  "title": "Find runs by more than their goal",
+  "body": "Search runs by device model, app build, model, suite version, review, or status. Results that match the goal appear first.",
+  "issues": ["CHE-8975"]
+}

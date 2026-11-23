@@ -1,6 +1,7 @@
 """Claims authority, aliases and two-process exclusion; no device I/O."""
 
 import importlib.util
+from dataclasses import replace
 import json
 import multiprocessing
 import os
@@ -91,6 +92,69 @@ class ClaimsTests(unittest.TestCase):
     config_file = fixtures.ComposeTests.config_file
     composed_broker = fixtures.ComposeTests.composed_broker
     take = fixtures.ComposeTests.take
+
+    def test_avd_reload_requires_new_generation_and_retains_claims_and_quarantine(self):
+        from device_lease.claims import ClaimLedger
+
+        self.live()
+        avd = next(
+            device
+            for device in DeviceRegistry.load(
+                fixtures.ROOT / "tests/fixtures/device_lease/avd.json"
+            ).devices()
+            if device.kind == "avd"
+        )
+        claim = self.ledger.claim("usb-rig-1", owner="android", run_id="run", reference="fixture")
+
+        def candidate(device):
+            return ClaimLedger(
+                self.ledger.db_path,
+                self.ledger.guard,
+                DeviceRegistry([*self.reg.devices(), device]),
+                self.ledger.lock_dir,
+            )
+
+        def census(ledger, generation=2, **updates):
+            packet = dict(
+                generation=generation,
+                observed_at=time.time(),
+                complete=True,
+                writers=["android", "artemis"],
+                claims=self.ledger.snapshot()["claims"],
+            )
+            ledger.census(**(packet | updates))
+
+        original = candidate(avd)
+        for changes in ({"observed_at": 0}, {"claims": []}, {"generation": 1}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                census(original, **changes)
+        census(original)
+        self.assertEqual(original.aliases[avd.aliases[0]], avd.device_id)
+        self.assertEqual(original.snapshot()["claims"][0]["claim_id"], claim)
+
+        changed = candidate(replace(avd, config_sha256="d" * 64))
+        with self.assertRaises(ValueError):
+            census(changed)
+        with sqlite3.connect(self.ledger.db_path) as conn:
+            conn.execute(
+                "INSERT INTO broker_groups VALUES ('fixture','owner','run','test',0,1,1,1,'quarantine',NULL,NULL)"
+            )
+        with self.assertRaises(ValueError):
+            census(changed, generation=3)
+        census(original, generation=3)
+        with sqlite3.connect(self.ledger.db_path) as conn:
+            self.assertEqual(
+                conn.execute("SELECT state FROM broker_groups").fetchone(), ("quarantine",)
+            )
+            conn.execute("UPDATE broker_groups SET state='released'")
+            conn.execute(
+                "INSERT INTO broker_tickets (ticket_id, principal, agent_id, issue_id, pool, count, ttl, position, state) VALUES ('ticket','owner','agent','issue','rig',1,300,1,'offered')"
+            )
+        with self.assertRaises(ValueError):
+            census(changed, generation=4)
+        with sqlite3.connect(self.ledger.db_path) as conn:
+            conn.execute("UPDATE broker_tickets SET state='cancelled'")
+        census(changed, generation=4)
 
     def test_unverified_snapshot_writer_cannot_overlap_grant(self):
         broker, composed = self.composed_broker()

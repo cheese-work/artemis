@@ -1,0 +1,21 @@
+[
+  {
+    "device_id": "fixture_api35",
+    "kind": "avd",
+    "pool": "avd",
+    "aliases": ["emulator-5584", "127.0.0.1:5585"],
+    "api": 35,
+    "abi": "x86_64",
+    "restricted": false,
+    "identity_confirmed": false,
+    "avd_name": "fixture_api35",
+    "avd_data_path": "/fixture/android/avd/fixture_api35.avd",
+    "avd_definition_path": "/fixture/android/avd/fixture_api35.ini",
+    "console_port": 5584,
+    "adb_port": 5585,
+    "emulator_path": "/fixture/android/sdk/emulator/emulator",
+    "emulator_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "image_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  }
+]

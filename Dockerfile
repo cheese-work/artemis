@@ -12,6 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+FROM scratch AS preview-node-inputs
+
+FROM node:22-bookworm-slim AS preview-frontend-builder
+
+WORKDIR /build/apps/showcase_ui
+COPY --from=preview-node-inputs /apps/showcase_ui/package.json /apps/showcase_ui/package-lock.json ./
+COPY --from=preview-node-inputs /apps/showcase_ui/node_modules/ ./node_modules/
+COPY apps/showcase_ui/scripts/ ./scripts/
+ENV npm_config_offline=true
+RUN --network=none npm rebuild && npm run postinstall
+COPY apps/showcase_ui/angular.json apps/showcase_ui/tsconfig*.json ./
+COPY apps/showcase_ui/public/ ./public/
+COPY apps/showcase_ui/whats-new/ ./whats-new/
+COPY apps/showcase_ui/src/ ./src/
+RUN --network=none sed -i -E '/<link .*href="https:\/\/fonts\.(googleapis|gstatic)\.com(\/|")/d' src/index.html
+ARG ARTEMIS_BUILD_SHA
+RUN --network=none npm run build
+
+
 FROM node:22-bookworm-slim AS frontend-builder
 
 WORKDIR /build/apps/showcase_ui
@@ -64,15 +83,15 @@ EXPOSE 8080
 # Per-PR preview image (build with `--target preview`): no ADB, no device tooling,
 # no curl or git, non-root, and always in the synthetic preview profile. The host
 # daemon still sets its own user, mounts and limits at run time (CHE-1291).
-FROM runtime-base AS preview
+FROM python:3.12-slim AS preview
 
-# Shared libraries the OpenCV wheel (imported at startup) needs; nothing else.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 \
-    libglib2.0-0 \
-    libxcb1 \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin preview
+WORKDIR /app
+COPY --from=preview-frontend-builder /build/apps/showcase_ui/dist/ ./apps/showcase_ui/dist/
+RUN --network=none useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin preview
+ENV PYTHONUNBUFFERED=1
+ENV ARTEMIS_APP_DIR=/app
+ENV PORT=8080
+EXPOSE 8080
 USER 10001:10001
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV ARTEMIS_PREVIEW_PROFILE=1

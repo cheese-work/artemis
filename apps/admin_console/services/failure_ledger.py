@@ -37,7 +37,7 @@ from typing import Any
 
 from artemis.runtime.lifecycle import ensure_lifecycle_schema
 
-from apps.admin_console.core.redaction import redact_text
+from apps.admin_console.core.redaction import REDACTED, redact_text
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 from apps.admin_console.services import run_settings
 
@@ -58,6 +58,24 @@ _CAUSE_LIMIT = 20
 _IDS_PER_CAUSE = 10
 _STUCK_AFTER = 60 * 60.0
 _GOAL_STOP_WORDS = {"a", "an", "and", "for", "in", "of", "or", "the", "to", "with"}
+# Generic automation and ledger words are readable only outside a matched goal phrase.
+_GOAL_READABLE_WORDS = _GOAL_STOP_WORDS | {
+    "action",
+    "app",
+    "button",
+    "click",
+    "device",
+    "error",
+    "failed",
+    "open",
+    "run",
+    "screen",
+    "step",
+    "tap",
+}
+_GOAL_REDACTED = "[goal redacted]"
+_GOAL_WORD = re.compile(r"\w+")
+_EVIDENCE_TOKEN = re.compile(rf"{re.escape(REDACTED)}|{re.escape(_GOAL_REDACTED)}|(\w+)")
 
 # (rule, category, pattern), first match wins. Patterns are matched case-insensitively.
 _RULES: tuple[tuple[str, str, str], ...] = (
@@ -201,7 +219,52 @@ def _cause(rule: str, evidence: str) -> str:
     return f"{rule}|{normalized[:120]}"
 
 
+def _redact_goal(evidence: str, goal: str) -> str:
+    """Mask full phrases and merge overlapping word pairs into one evidence marker."""
+    goal_words = [word.casefold() for word in _GOAL_WORD.findall(goal)]
+    pairs = set(zip(goal_words, goal_words[1:]))
+    distinctive = set(goal_words) - _GOAL_READABLE_WORDS
+    phrase = r"\s+".join(map(re.escape, goal.split()))
+    leading_boundary = r"(?<!\w)" if _GOAL_WORD.match(goal[0]) else ""
+    trailing_boundary = r"(?!\w)" if _GOAL_WORD.match(goal[-1]) else ""
+    full_goal = re.compile(f"{leading_boundary}{phrase}{trailing_boundary}", re.IGNORECASE)
+
+    spans = [match.span() for match in full_goal.finditer(evidence)]
+    previous_word, previous_start = "", 0
+    for match in _EVIDENCE_TOKEN.finditer(evidence):
+        word = (match.group(1) or "").casefold()
+        if (previous_word, word) in pairs:
+            spans.append((previous_start, match.end()))
+        if word in distinctive:
+            spans.append(match.span())
+        previous_word, previous_start = word, match.start()
+
+    masked: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if masked and start < masked[-1][1]:
+            masked[-1] = (masked[-1][0], max(end, masked[-1][1]))
+        else:
+            masked.append((start, end))
+    parts = []
+    offset = 0
+    for start, end in masked:
+        parts.extend((evidence[offset:start], _GOAL_REDACTED))
+        offset = end
+    parts.append(evidence[offset:])
+    return "".join(parts)
+
+
 def _safe_evidence(evidence: str, goal: str | None, category: str | None = None) -> str:
+    evidence = redact_text(evidence)
+    if category == "user_prompt":
+        return "[prompt-side evidence redacted]"
+    if goal and (goal := goal.strip()):
+        evidence = _redact_goal(evidence, goal)
+    return evidence[:_EVIDENCE_MAX]
+
+
+def _legacy_safe_cause(evidence: str, goal: str | None, category: str) -> str:
+    """Keep the original migration's cause normalization and defect keys."""
     evidence = redact_text(evidence)
     if category == "user_prompt":
         evidence = "[prompt-side evidence redacted]"
@@ -210,7 +273,7 @@ def _safe_evidence(evidence: str, goal: str | None, category: str | None = None)
         content_words = words - _GOAL_STOP_WORDS
         for word in sorted(content_words or words, key=len, reverse=True):
             evidence = re.sub(
-                rf"\b{re.escape(word)}\b", "[goal redacted]", evidence, flags=re.IGNORECASE
+                rf"\b{re.escape(word)}\b", _GOAL_REDACTED, evidence, flags=re.IGNORECASE
             )
     return evidence[:_EVIDENCE_MAX]
 
@@ -273,7 +336,7 @@ def _ensure(conn: sqlite3.Connection) -> None:
             ).fetchall()
             for legacy_row in legacy_rows:
                 safe_evidence = _safe_evidence(legacy_row[1], legacy_row[3], legacy_row[4])
-                safe_cause = _safe_evidence(legacy_row[2], legacy_row[3], legacy_row[4])
+                safe_cause = _legacy_safe_cause(legacy_row[2], legacy_row[3], legacy_row[4])
                 if safe_evidence != legacy_row[1] or safe_cause != legacy_row[2]:
                     conn.execute(
                         "UPDATE failure_ledger SET evidence = ?, cause = ? WHERE id = ?",
@@ -422,6 +485,7 @@ def collect(session_id: str | None = None, *, db_path=None, traces_dir=None) -> 
     traces_dir = run_catalog_repo.traces_dir if traces_dir is None else Path(traces_dir)
     with db_session(run_catalog_repo.db_path if db_path is None else db_path) as conn:
         _ensure(conn)
+        conn.commit()  # Release schema/migration writes before reading trace files.
         candidates = []
         for query, params in (
             (_RUNS_SQL, (now,)),
@@ -474,7 +538,6 @@ def collect(session_id: str | None = None, *, db_path=None, traces_dir=None) -> 
                         raw_text = json.dumps(raw, sort_keys=True)
             else:
                 raw_text = raw
-            evidence = _safe_evidence(raw_text, row["goal"])
             source = "host" if row["host_id"] else "browser"
             recording_device = row["recording_device"] if "recording_device" in row.keys() else None
             device = recording_device or _device(row["device_info"])
@@ -483,7 +546,7 @@ def collect(session_id: str | None = None, *, db_path=None, traces_dir=None) -> 
                 from artemis.utils.video import classify_recording_failure
 
                 rule = classify_recording_failure(raw)
-                evidence = evidence or "Video recording failed"
+                evidence = _safe_evidence(raw_text, row["goal"]) or "Video recording failed"
                 category = "smartqa_infra"
             else:
                 category, rule = ("smartqa_infra", "run_stuck") if row["stuck"] else classify(raw)
@@ -525,11 +588,13 @@ def collect(session_id: str | None = None, *, db_path=None, traces_dir=None) -> 
                     )
                 )
         before = conn.total_changes
+        # Purge may commit while evidence is read; check existence inside the write statement.
         conn.executemany(
             "INSERT OR IGNORE INTO failure_ledger (session_id, step_number, signal, scope, category, "
             "rule, cause, evidence, device, source, owner, occurred_at, classified_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            rows,
+            "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? "
+            "WHERE EXISTS (SELECT 1 FROM sessions WHERE session_id = ?)",
+            ((*row, row[0]) for row in rows),
         )
         conn.commit()
         return {"scanned": len(candidates), "inserted": conn.total_changes - before}

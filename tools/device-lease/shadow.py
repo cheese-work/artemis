@@ -227,6 +227,8 @@ def smartqa_decide(value):
                 ttl=args["ttl"],
                 hard_deadline=deadline,
                 state="active",
+                access_phase="work",
+                startup=None,
                 recovery_owner=None,
                 ops_issue=None,
                 devices=[
@@ -240,6 +242,8 @@ def smartqa_decide(value):
                 ],
             )
         if op == "renew":
+            if group.get("access_phase", "work") != "work":
+                raise Refused("access_phase_denied")
             if now >= group["expires_at"]:
                 raise Refused("lease_expired")
             if group["state"] != "active":

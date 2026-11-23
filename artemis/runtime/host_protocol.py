@@ -111,6 +111,19 @@ directions. Stream ids are positive, monotonic, and never reused within an epoch
 Only the server opens streams; each OPEN targets the host's local adb server.
 The server's allowlist gateway checks nested transport and service requests.
 
+Recording assignment sync (CHE-7696):
+- The first successful handshake frame, `connected`, includes a `recordings`
+  array. It lists up to 64 oldest qualifying assignments for the authenticated
+  host: records before their deadline and stops not yet acknowledged. With no
+  qualifying assignments, the array is empty.
+- Each entry has `recording_id`, `session_id`, `run_generation`, `desired_state`
+  (`record` or `stop`), `revision`, and `deadline` (Unix seconds).
+- A host sends `{{"type":"recording_ack","recording_id":"<id>","revision":2}}` to
+  acknowledge a revision. The server uses the socket's authenticated host and
+  sends no reply. The ID must be a string of at most 64 characters and the revision
+  a positive integer, not a Boolean. Invalid fields are ignored without closing
+  the socket. Acknowledged stops no longer qualify on reconnect.
+
 Generation/grace contract for CHE-1108 and B3:
 - The authenticated registry generation is the frame epoch and endpoint generation.
 - A disconnect immediately unregisters and closes its loopback listener and streams.

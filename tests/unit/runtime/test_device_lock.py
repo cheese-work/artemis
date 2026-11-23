@@ -12,10 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+from contextlib import contextmanager
 import json
 import os
+import select
+import subprocess
+import sys
 import threading
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -478,3 +485,195 @@ def test_owner_lock_waits_for_shared_admission_guard(tmp_path, monkeypatch):
     worker.join(timeout=5)
     assert lock.path.exists()
     lock.release()
+
+
+def test_held_admission_guard_respects_acquire_timeout(tmp_path, monkeypatch):
+    import fcntl
+    from concurrent.futures import ThreadPoolExecutor
+
+    guard = tmp_path / "claims.guard"
+    monkeypatch.setenv("ARTEMIS_DEVICE_ADMISSION_GUARD", str(guard))
+    monkeypatch.setenv("ARTEMIS_DEVICE_CLAIMS_DB", str(tmp_path / "leases.sqlite3"))
+    lock = DeviceExecutionLock("emulator-5554")
+    with ThreadPoolExecutor() as workers, guard.open("wb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        future = workers.submit(lock.acquire, timeout=0.05, poll_interval=0.01)
+        with pytest.raises(DeviceBusyError, match="Timed out waiting for the Artemis device queue"):
+            future.result(timeout=1)
+    assert not lock.path.exists()
+    assert not list(lock.queue_dir.glob("*.wait"))
+
+
+@pytest.fixture
+def broker_handoff(tmp_path, monkeypatch):
+    guard = tmp_path / "claims.guard"
+    guard.touch()
+    database = tmp_path / "leases.sqlite3"
+    database.touch()
+    for name, value in {
+        "ARTEMIS_DEVICE_ADMISSION_GUARD": str(guard),
+        "ARTEMIS_DEVICE_CLAIMS_DB": str(database),
+        "MULTICA_AGENT_ID": "fixture-agent",
+        "MULTICA_TASK_ID": "fixture-run",
+        "MULTICA_RUN_BINDING_ID": "fixture-binding",
+        "ARTEMIS_DEVICE_LEASE_HANDOFF": json.dumps(
+            {
+                "socket": str(tmp_path / "broker.sock"),
+                "lease_id": "fixture-lease",
+                "device_id": "fixture-device",
+                "issue_id": "fixture-issue",
+                "generation": 1,
+                "phase": "work",
+            }
+        ),
+    }.items():
+        monkeypatch.setenv(name, value)
+    broker_rpc = Mock(return_value={"acquired": True})
+    readback = Mock()
+    monkeypatch.setattr("device_lease.transport.rpc", broker_rpc)
+    monkeypatch.setattr("device_lease.claims.check_sdk_handoff", readback)
+    return guard, broker_rpc, readback
+
+
+def test_handoff_readback_guard_respects_acquire_timeout(broker_handoff):
+    import fcntl
+    from concurrent.futures import ThreadPoolExecutor
+
+    guard, broker_rpc, readback = broker_handoff
+    lock = DeviceExecutionLock("emulator-5554")
+    with ThreadPoolExecutor() as workers, guard.open("wb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        future = workers.submit(lock.acquire, timeout=0.05, poll_interval=0.01)
+        with pytest.raises(DeviceBusyError, match="Timed out waiting for the Artemis device queue"):
+            future.result(timeout=1)
+
+    assert broker_rpc.called
+    readback.assert_not_called()
+    assert not lock.path.exists()
+    assert not list(lock.queue_dir.glob("*.wait"))
+
+
+@contextmanager
+def _brief_broker_guard_hold(guard):
+    script = """\
+import fcntl
+import sys
+import time
+
+with open(sys.argv[1], 'rb') as guard:
+    fcntl.flock(guard, fcntl.LOCK_EX)
+    print('ready', flush=True)
+    if sys.stdin.read(1):
+        time.sleep(0.5)
+"""
+    with subprocess.Popen(
+        [sys.executable, "-c", script, str(guard)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    ) as holder:
+        try:
+            assert select.select([holder.stdout], [], [], 5)[0], "guard holder did not start"
+            assert holder.stdout.readline() == "ready\n"
+            yield holder.stdin
+        finally:
+            holder.stdin.close()
+            try:
+                assert holder.wait(timeout=5) == 0
+            except subprocess.TimeoutExpired:
+                holder.kill()
+                raise
+
+
+@pytest.fixture(params=["validation", "sdk-init"])
+def managed_avd_operation(request, broker_handoff, monkeypatch):
+    _, broker_rpc, readback = broker_handoff
+    if request.param == "validation":
+        lock = DeviceExecutionLock("emulator-5554")
+        lock.acquire(blocking=False)
+        broker_rpc.reset_mock()
+        readback.reset_mock()
+        try:
+            yield request.param, lock.validate_handoff
+        finally:
+            lock.release()
+        return
+
+    from artemis.sdk.agent import Agent, DevicePlatform
+
+    monkeypatch.delenv("ARTEMIS_CLOUD_MODE", raising=False)
+    monkeypatch.delenv("ARTEMIS_CHAT_SESSION_ID", raising=False)
+    agent = Agent.__new__(Agent)
+    agent._initialized = False
+    agent._session_id = "fixture"
+    agent._lease_execution_lock = None
+    agent._config = SimpleNamespace(
+        device_id="emulator-5554",
+        device_platform=DevicePlatform.ANDROID,
+        servers=SimpleNamespace(adb_host="127.0.0.1", adb_port=5037),
+        concurrency_mode="per_device",
+        max_concurrency=None,
+    )
+    monkeypatch.setattr(agent, "_init_device", AsyncMock(return_value=True))
+    try:
+        yield request.param, lambda: asyncio.run(agent._init_internal())
+    finally:
+        if agent._lease_execution_lock is not None:
+            agent._lease_execution_lock.release()
+
+
+def test_managed_avd_retries_brief_guard_contention(broker_handoff, managed_avd_operation):
+    guard, broker_rpc, readback = broker_handoff
+    _, operation = managed_avd_operation
+    with _brief_broker_guard_hold(guard) as release:
+
+        def acquire_from_broker(*args):
+            if broker_rpc.call_count == 1:
+                release.write("1")
+                release.flush()
+            return {"acquired": True}
+
+        broker_rpc.side_effect = acquire_from_broker
+        assert operation() is True
+
+    broker_rpc.assert_called_once()
+    readback.assert_called_once()
+
+
+def test_managed_avd_reports_broker_admission_timeout(broker_handoff, managed_avd_operation):
+    import fcntl
+
+    guard, broker_rpc, readback = broker_handoff
+    _, operation = managed_avd_operation
+    with guard.open("rb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        started_at = time.monotonic()
+        with pytest.raises(
+            DeviceBusyError, match=r"Timed out waiting for device broker admission after 2\.0s"
+        ):
+            operation()
+        assert 1.9 <= time.monotonic() - started_at < 4
+
+    broker_rpc.assert_called_once()
+    readback.assert_not_called()
+    assert not _queue_files(guard.parent)
+
+
+def test_managed_avd_does_not_retry_occupied_device(
+    broker_handoff, managed_avd_operation, monkeypatch
+):
+    _, broker_rpc, readback = broker_handoff
+    operation_name, operation = managed_avd_operation
+    broker_rpc.return_value = {"code": "execution_lock_busy"}
+    sleep = Mock(side_effect=AssertionError("occupied device must not wait"))
+    monkeypatch.setattr("artemis.runtime.device_lock.time.sleep", sleep)
+
+    if operation_name == "validation":
+        assert operation() is False
+    else:
+        with pytest.raises(DeviceBusyError, match="already controlled"):
+            operation()
+
+    broker_rpc.assert_called_once()
+    readback.assert_not_called()
+    sleep.assert_not_called()

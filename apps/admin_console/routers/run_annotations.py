@@ -1,4 +1,4 @@
-"""Annotation API over the notes model and evidence resolver (CHE-1465)."""
+"""Run annotations and comments over the notes model (CHE-1465, CHE-1466)."""
 
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -13,7 +13,9 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
+from starlette.exceptions import HTTPException
 
+from apps.admin_console.core import config
 from apps.admin_console.core.access_control import (
     AccessIdentity,
     AdminAPIError,
@@ -60,7 +62,29 @@ class AnnotationRoute(APIRoute):
         return checked
 
 
+class CommentRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def checked(request: Request):
+            try:
+                return await handler(request)
+            except RequestValidationError as exc:
+                raise notes.invalid_comment_body() from exc
+            except HTTPException as exc:
+                if exc.status_code == 400 and isinstance(exc.__cause__, UnicodeDecodeError):
+                    raise notes.invalid_comment_body() from exc
+                raise
+            except AdminAPIError as exc:
+                if request.method == "POST" and exc.code == "not_signed_in":
+                    raise _note_actor_required() from exc
+                raise
+
+        return checked
+
+
 router = APIRouter(tags=["annotations"], route_class=AnnotationRoute)
+comment_router = APIRouter(tags=["comments"], route_class=CommentRoute)
 
 
 def initialize_notes() -> None:
@@ -104,8 +128,19 @@ class AnnotationUpdate(BaseModel):
     _no_nul = field_validator("body")(_reject_nul)
 
 
+class CommentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    body: StrictStr
+
+    @field_validator("body")
+    @classmethod
+    def _require_utf8(cls, body: str) -> str:
+        body.encode("utf-8")
+        return body
+
+
 @contextmanager
-def _database(session_id: str, identity: AccessIdentity):
+def _database(session_id: str, identity: AccessIdentity, *, include_comments: bool = False):
     require_visible_run(scope_for(identity), [session_id])
     with db_session(run_catalog_repo.db_path) as conn:
         if not conn.execute(
@@ -114,13 +149,11 @@ def _database(session_id: str, identity: AccessIdentity):
             (session_id,),
         ).fetchone():
             raise run_not_visible()
-        if (
-            conn.execute(
-                "SELECT count(*) FROM sqlite_master WHERE type = 'table' "
-                "AND name IN ('run_annotations', 'evidence_tombstones')"
-            ).fetchone()[0]
-            != 2
-        ):
+        if conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('run_annotations', 'evidence_tombstones', ?)",
+            ("run_comments" if include_comments else None,),
+        ).fetchone()[0] != (3 if include_comments else 2):
             raise AdminAPIError(
                 503,
                 "The notes store is not ready.",
@@ -132,17 +165,21 @@ def _database(session_id: str, identity: AccessIdentity):
         yield conn
 
 
+def _note_actor_required() -> AdminAPIError:
+    return AdminAPIError(
+        401,
+        "A verified issuer and subject are required to write notes.",
+        "actor_required",
+        "Sign in through Cloudflare Access before writing notes.",
+    )
+
+
 def note_principal(identity: AccessIdentity) -> str:
     """Stable authorship; preview identities never reserve production email history."""
     if identity.auth_mode == "open":
         return "open:local"
     if not identity.issuer or not identity.subject:
-        raise AdminAPIError(
-            401,
-            "A verified issuer and subject are required to write notes.",
-            "actor_required",
-            "Sign in through Cloudflare Access before writing notes.",
-        )
+        raise _note_actor_required()
     if identity.auth_mode == "preview":
         key = json.dumps([identity.issuer, identity.subject]).encode()
         return "preview:" + hashlib.sha256(key).hexdigest()
@@ -163,14 +200,15 @@ def note_principal(identity: AccessIdentity) -> str:
 
 
 def require_note_write(principal_id: str) -> None:
-    """Shared per-caller budget for annotations and the forthcoming comment API."""
-    if not host_registry.allow(f"notes:{principal_id}", 30, 60):
+    """Shared per-caller budget for annotation writes and POST /api/runs/{session_id}/comments."""
+    window = config.NOTE_WRITE_WINDOW_SECONDS
+    if not host_registry.allow(f"notes:{principal_id}", config.NOTE_WRITE_LIMIT, window):
         raise AdminAPIError(
             429,
             "Too many note writes in one minute.",
             "rate_limited",
             "Wait a minute before writing another note.",
-            retry_after=60,
+            retry_after=window,
             docs_url=f"{notes.DOCS}#rate_limited",
         )
 
@@ -190,6 +228,11 @@ def _timestamp(value: float | None) -> str | None:
     return datetime.fromtimestamp(value, UTC).isoformat() if value is not None else None
 
 
+def _author_email(conn, principal_id: str) -> str | None:
+    author = conn.execute("SELECT email FROM principals WHERE id = ?", (principal_id,)).fetchone()
+    return author[0] if author else None
+
+
 def _present(conn, annotation: notes.Annotation) -> dict:
     if annotation.anchor_kind == "step":
         anchor = {"kind": "step", "step_id": annotation.step_id}
@@ -204,13 +247,10 @@ def _present(conn, annotation: notes.Annotation) -> dict:
             "offset_ms": annotation.offset_ms,
             "label": f"Recording · {seconds // 60:02d}:{seconds % 60:02d}",
         }
-    author = conn.execute(
-        "SELECT email FROM principals WHERE id = ?", (annotation.author_principal_id,)
-    ).fetchone()
     return {
         "annotation_id": annotation.annotation_id,
         "session_id": annotation.session_id,
-        "author": author[0] if author else None,
+        "author": _author_email(conn, annotation.author_principal_id),
         "author_principal_id": annotation.author_principal_id,
         "anchor": anchor,
         "body": annotation.body,
@@ -219,6 +259,41 @@ def _present(conn, annotation: notes.Annotation) -> dict:
         "edited_at": _timestamp(annotation.edited_at),
         "deep_link": f"/runs/{quote(annotation.session_id, safe='')}?annotation={annotation.annotation_id}",
     }
+
+
+def _present_comment(conn, comment: notes.Comment) -> dict:
+    return {
+        "comment_id": comment.comment_id,
+        "session_id": comment.session_id,
+        "author": _author_email(conn, comment.author_principal_id),
+        "author_principal_id": comment.author_principal_id,
+        "body": comment.body,
+        "created_at": _timestamp(comment.created_at),
+        "edited_at": _timestamp(comment.edited_at),
+    }
+
+
+@comment_router.get("/api/runs/{session_id}/comments", dependencies=[Depends(evidence_scope)])
+def list_comments(session_id: str, identity: AccessIdentity = Depends(public_tier)):
+    with _database(session_id, identity, include_comments=True) as conn:
+        return {
+            "comments": [
+                _present_comment(conn, comment) for comment in notes.list_comments(conn, session_id)
+            ]
+        }
+
+
+@comment_router.post(
+    "/api/runs/{session_id}/comments", status_code=201, dependencies=[Depends(evidence_scope)]
+)
+def create_comment(
+    session_id: str, body: CommentCreate, identity: AccessIdentity = Depends(public_tier)
+):
+    with _database(session_id, identity, include_comments=True) as conn:
+        principal_id = note_principal(identity)
+        require_note_write(principal_id)
+        comment = notes.add_comment(conn, session_id, body.body, principal_id)
+        return _present_comment(conn, comment)
 
 
 def _require_author(annotation: notes.Annotation, principal_id: str) -> None:
@@ -303,7 +378,7 @@ def edit_annotation(
             (
                 body.body if "body" in body.model_fields_set else annotation.body,
                 body.resolved if "resolved" in body.model_fields_set else annotation.resolved,
-                time.time(),
+                time.time() if "body" in body.model_fields_set else annotation.edited_at,
                 annotation_id,
                 session_id,
             ),

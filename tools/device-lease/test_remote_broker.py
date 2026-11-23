@@ -76,6 +76,15 @@ class BrokerRemoteTests(unittest.TestCase):
             self.assertIsNone(self.resolver(self.identity), field)
             self.policy[field] = before
 
+    def test_starting_phase_denies_general_adb_even_with_otherwise_valid_work_evidence(self):
+        self.assertIsNotNone(self.resolver(self.identity))
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                "UPDATE broker_access SET phase='starting' WHERE lease_id=?",
+                (self.group["lease_id"],),
+            )
+        self.assertIsNone(self.resolver(self.identity))
+
     def test_failed_independent_post_cleanup_attestation_quarantines(self):
         recovery = FakeRecovery()
         recovery.verify_state = lambda group, **kw: False

@@ -12,14 +12,16 @@ import os
 from pathlib import Path
 import socket
 import socketserver
+import sqlite3
 import stat
+import struct
 import subprocess
 import sys
 import threading
 
 from broker import Broker, DeviceRegistry, Refused, process_identity
+from device_lease.transport import MAX_FRAME, rpc
 
-MAX_FRAME = 65536
 DEFAULT_STATE = Path.home() / ".local/state/artemis-device-lease"
 
 
@@ -30,7 +32,21 @@ class Handler(socketserver.StreamRequestHandler):
             data = self.rfile.readline(MAX_FRAME + 1)
             if len(data) > MAX_FRAME or not data.endswith(b"\n"):
                 raise Refused("invalid_request")
-            response = self.server.dispatch(json.loads(data))
+            request = json.loads(data)
+            if (
+                isinstance(request, dict)
+                and request.get("op") == "execution-lock"
+                and isinstance(self.server, BrokerServer)
+            ):
+                credentials = self.request.getsockopt(
+                    socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+                )
+                pid, uid, _ = struct.unpack("3i", credentials)
+                if uid != os.geteuid():
+                    raise Refused("run_not_live")
+                response = self.server.dispatch(request, peer_pid=pid)
+            else:
+                response = self.server.dispatch(request)
         except Refused as exc:
             response = {"code": exc.code, **exc.details}
         except (ValueError, UnicodeError, TimeoutError):
@@ -80,14 +96,14 @@ class BrokerServer(socketserver.UnixStreamServer):
             super().__init__(str(self.socket_path), Handler, bind_and_activate=False)
             self.server_bind()
             self._owns_socket = True
-            self.server_activate()
             os.chmod(self.socket_path, 0o600)
             broker.restart()
+            self.server_activate()
         except BaseException:
             self.server_close()
             raise
 
-    def dispatch(self, request):
+    def dispatch(self, request, *, peer_pid=None):
         if not isinstance(request, dict) or set(request) != {"op", "args"}:
             raise Refused("invalid_request")
         methods = {
@@ -102,6 +118,16 @@ class BrokerServer(socketserver.UnixStreamServer):
             "claim": self.broker.claim,
             "inventory": self.broker.inventory,
         }
+        if request["op"] == "execution-lock" and peer_pid is not None:
+            from work_handoff import acquire
+
+            if not isinstance(request["args"], dict):
+                raise Refused("invalid_request")
+            try:
+                inspect.signature(acquire).bind(self.broker, peer_pid, **request["args"])
+            except TypeError as exc:
+                raise Refused("invalid_request") from exc
+            return acquire(self.broker, peer_pid, **request["args"])
         if not isinstance(request["op"], str) or request["op"] not in methods:
             raise Refused("invalid_request")
         method = methods[request["op"]]
@@ -109,7 +135,11 @@ class BrokerServer(socketserver.UnixStreamServer):
             raise Refused("invalid_request")
         if request["op"] in {"acquire", "claim"}:
             binding = request["args"].get("binding")
-            if not isinstance(binding, dict) or binding.get("mode") != "local":
+            if (
+                not isinstance(binding, dict)
+                or not isinstance(binding.get("mode"), str)
+                or binding["mode"] not in {"local", "managed"}
+            ):
                 raise Refused("invalid_request")
         try:
             inspect.signature(method).bind(**request["args"])
@@ -177,6 +207,10 @@ class ControlServer(socketserver.UnixStreamServer):
             "verify-release": self.broker.verify_release,
             "recover-quarantine": self.broker.recover_quarantine,
             "record-change": self.broker.record_change,
+            "start": self.broker.start,
+            "claim-startup": self.broker.claim_startup,
+            "launch-startup": self.broker.launch_startup,
+            "verify-startup": self.broker.verify_startup,
         }
         if not isinstance(request["op"], str) or request["op"] not in methods:
             raise Refused("invalid_request")
@@ -194,21 +228,6 @@ class ControlServer(socketserver.UnixStreamServer):
         if self._owns_socket:
             self.socket_path.unlink(missing_ok=True)
             self._owns_socket = False
-
-
-def rpc(socket_path, request):
-    """Clients touch only the socket, never the database."""
-    encoded = json.dumps(request).encode() + b"\n"
-    if len(encoded) > MAX_FRAME:
-        raise ValueError("request is too large")
-    with socket.socket(socket.AF_UNIX) as client:
-        client.settimeout(15)
-        client.connect(str(socket_path))
-        client.sendall(encoded)
-        response = client.makefile("rb").readline(MAX_FRAME + 1)
-    if len(response) > MAX_FRAME or not response.endswith(b"\n"):
-        raise ValueError("invalid broker response")
-    return json.loads(response)
 
 
 def main(argv=None):
@@ -248,6 +267,7 @@ def main(argv=None):
         "claim-android",
         "release-android",
         "list-android-claims",
+        "refresh",
     ):
         owner = sub.add_parser(operation, help="owner-only source operation under the shared guard")
         owner.add_argument("--composition", type=Path, required=True)
@@ -255,6 +275,12 @@ def main(argv=None):
         owner.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
         if operation in {"write-readiness", "census-android-claims"}:
             owner.add_argument("--input", type=Path, required=True)
+        if operation == "census-android-claims":
+            owner.add_argument(
+                "--validate-reload", action="store_true", help="validate without publishing"
+            )
+        if operation == "refresh":
+            owner.add_argument("--host-config", type=Path, required=True)
         if operation in {"claim-android", "release-android"}:
             owner.add_argument("--owner", required=True)
             owner.add_argument("--run-id", required=True)
@@ -294,7 +320,11 @@ def main(argv=None):
             if op in {"park", "claim"}:
                 command.add_argument("--run-id", required=True)
             if op == "claim":
-                command.add_argument("--pid", type=int, required=True)
+                holder = command.add_mutually_exclusive_group(required=True)
+                holder.add_argument("--pid", type=int)
+                holder.add_argument(
+                    "--managed-binding", help="launcher-provided MULTICA_RUN_BINDING_ID"
+                )
                 command.add_argument("--idempotency-key", required=True)
             continue
         command.add_argument("--run-id", required=True)
@@ -305,10 +335,13 @@ def main(argv=None):
             command.add_argument("--purpose", required=True)
             command.add_argument("--agent-id", required=True)
             command.add_argument("--issue-id", required=True)
-            command.add_argument(
+            holder = command.add_mutually_exclusive_group(required=True)
+            holder.add_argument(
+                "--managed-binding", help="launcher-provided MULTICA_RUN_BINDING_ID"
+            )
+            holder.add_argument(
                 "--pid",
                 type=int,
-                required=True,
                 help="live agent run PID (not this short-lived CLI process)",
             )
         else:
@@ -323,6 +356,10 @@ def main(argv=None):
 
     try:
         if op == "serve":
+            if args["composition"] and args["registry"]:
+                from compose import _owner_file
+
+                _owner_file(args["registry"])
             registry = (
                 DeviceRegistry.load(args["registry"]) if args["registry"] else DeviceRegistry()
             )
@@ -373,17 +410,29 @@ def main(argv=None):
             "claim-android",
             "release-android",
             "list-android-claims",
+            "refresh",
         }:
             from compose import compose, write_readiness, _owner_file
 
             _owner_file(args["registry"])
             registry = DeviceRegistry.load(args["registry"])
             state = args["state_dir"]
-            composed = compose(args["composition"], registry, db_path=state / "leases.sqlite3")
-            # Initialize broker tables. No maintenance worker or device I/O here.
-            Broker(state / "leases.sqlite3", registry, **composed["broker"]).inventory()
+            validate_reload = args.get("validate_reload", False)
+            composed = compose(
+                args["composition"],
+                registry,
+                db_path=state / "leases.sqlite3",
+                initialize=not validate_reload,
+            )
+            broker = Broker(state / "leases.sqlite3", registry, **composed["broker"])
+            if not validate_reload:
+                broker.ensure_schema()
             ledger = composed["ledger"]
-            if op == "write-readiness":
+            if op == "refresh":
+                from refresh import refresh
+
+                result = refresh(composed, args["host_config"], broker)
+            elif op == "write-readiness":
                 result = write_readiness(composed, args["input"], registry)
             elif op == "census-android-claims":
                 _owner_file(args["input"])
@@ -396,7 +445,7 @@ def main(argv=None):
                     "claims",
                 }:
                     raise ValueError("invalid census")
-                result = ledger.census(**payload)
+                result = ledger.census(**payload, validate_reload=validate_reload)
             elif op == "claim-android":
                 result = {
                     "claim_id": ledger.claim(
@@ -446,7 +495,13 @@ def main(argv=None):
             print(json.dumps(response))
             return 0
         if op in {"acquire", "claim"}:
-            args["binding"] = process_identity(args.pop("pid"))
+            managed = args.pop("managed_binding")
+            pid = args.pop("pid")
+            args["binding"] = (
+                {"mode": "managed", "binding_id": managed}
+                if managed is not None
+                else process_identity(pid)
+            )
         response = rpc(socket_path, {"op": op, "args": args})
         print(json.dumps(response))
         return 1 if "code" in response else 0
@@ -456,6 +511,6 @@ def main(argv=None):
         # Field names only; never input paths, values or credentials.
         print(f"device-lease: {exc}", file=sys.stderr)
         return 2
-    except (OSError, ValueError, RuntimeError, Refused, subprocess.SubprocessError):
+    except (OSError, ValueError, RuntimeError, Refused, sqlite3.Error, subprocess.SubprocessError):
         print("device-lease: broker unavailable or invalid configuration", file=sys.stderr)
         return 2

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -33,6 +35,58 @@ class ModelSelection(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     provider: str = Field(min_length=1, max_length=32)
     model: str = Field(min_length=1, max_length=256)
+
+
+class SmartQARouteStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["tap", "swipe", "back", "type"]
+    text: str | None = Field(default=None, min_length=1, max_length=512)
+    id: str | None = Field(default=None, min_length=1, max_length=256)
+    direction: Literal["up", "down", "left", "right"] | None = None
+    value: str | None = Field(default=None, max_length=512)
+    secret: bool = False
+
+    @model_validator(mode="after")
+    def check_action(self):
+        if self.secret:
+            raise ValueError("Secret-backed steps are not supported by the route worker")
+        if self.action in {"tap", "type"} and not (self.text or self.id):
+            raise ValueError("Tap and type steps need a selector")
+        if self.action == "type" and (
+            not self.value
+            or not self.value.isascii()
+            or not self.value.isprintable()
+            or "%s" in self.value
+            or "${secret:" in self.value
+        ):
+            raise ValueError("Type steps need plain printable test input")
+        if self.action == "swipe" and not self.direction:
+            raise ValueError("Swipe steps need a direction")
+        return self
+
+
+class SmartQAOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    theme: Literal["light", "dark"]
+    lease_id: str = Field(min_length=1, max_length=128)
+    apk_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    mode: Literal["route", "persona"]
+    fresh_install: Literal[True]
+    clear_data: Literal[True]
+    screens: list[str] = Field(min_length=1, max_length=100)
+    route: list[SmartQARouteStep] = Field(default_factory=list, max_length=100)
+    persona: str | None = None
+    max_model_calls: int = Field(ge=0, le=80)
+
+    @model_validator(mode="after")
+    def check_mode(self):
+        if self.mode == "route" and (not self.route or self.max_model_calls != 0):
+            raise ValueError("Scripted SmartQA needs route steps and a zero model budget")
+        return self
+
+
+class RunOptions(BaseModel):
+    smartqa: SmartQAOptions | None = None
 
 
 class RunRequest(BaseModel):
@@ -60,6 +114,7 @@ class RunRequest(BaseModel):
     run_id: str | None = None
     # Pictures for the one goal (image chat); see services/run_images.py for the limits.
     images: list[RunImageUpload] | None = None
+    options: RunOptions | None = None
 
     @model_validator(mode="after")
     def check_device_ref(self):

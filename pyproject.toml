@@ -137,6 +137,9 @@ exclude = [
     # CHE-564: unmodified upstream directory fails the fork's UP ruleset;
     # excluded to keep the fork's diff against upstream minimal.
     "playground",
+    # CHE-3275: vendored ci-policy checker, kept byte-identical to
+    # cheese-work/multica-dotfiles (S3a, de75e73); not formatted here.
+    ".github/ci-policy",
 ]
 
 # Same as Black.

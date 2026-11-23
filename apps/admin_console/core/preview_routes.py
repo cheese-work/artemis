@@ -68,6 +68,8 @@ REAL = frozenset(
         "PATCH /api/runs/{session_id}/annotations/{annotation_id}",
         "DELETE /api/runs/{session_id}/annotations/{annotation_id}",
         "GET /api/runs/{session_id}/annotations/{annotation_id}/evidence",
+        "GET /api/runs/{session_id}/comments",
+        "POST /api/runs/{session_id}/comments",
         "GET /api/system/retention",
         "GET /api/system/storage",
         "GET /api/system/whoami",
@@ -127,6 +129,8 @@ DISABLED = frozenset(
         "GET /api/sessions/{session_id}/replay_steps",
         "POST /api/sessions/{session_id}/steps/{step_number}/replay",
         "GET /api/sessions/{session_id}/steps/{step_number}/replay_traces",
+        # SmartQA check stores an uploaded APK on the host disk.
+        "POST /api/smartqa/apks",
         # Run library writes wait for the L3 fixture store and its ownership tests.
         "POST /api/cleanup",
         "POST /api/runs/{session_id}/pin",

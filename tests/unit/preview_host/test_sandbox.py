@@ -79,7 +79,11 @@ def test_only_mount_is_the_readonly_jwks_bundle():
 
 def test_writable_tmpfs_is_capped_at_256_mib():
     argv = create_argv()
-    sizes = [int(re.search(r"size=(\d+)m", t).group(1)) for t in values(argv, "--tmpfs")]
+    sizes = []
+    for mount in values(argv, "--tmpfs"):
+        size = re.search(r"size=(\d+)m", mount)
+        assert size is not None
+        sizes.append(int(size.group(1)))
     sizes.append(int(values(argv, "--shm-size")[0].rstrip("m")))
     assert sum(sizes) <= 256
     assert all("noexec" in t and "nosuid" in t and "nodev" in t for t in values(argv, "--tmpfs"))
@@ -239,7 +243,7 @@ def dockerfile_stages() -> dict[str, str]:
             name = match.group(1) or f"stage{len(stages)}"
             stages[name] = ""
         elif stages and not line.lstrip().startswith("#"):
-            stages[name] += line + "\n"
+            stages[next(reversed(stages))] += line + "\n"
     return stages
 
 
@@ -250,10 +254,8 @@ def test_preview_image_has_no_adb_and_is_not_root():
     assert "ARTEMIS_PREVIEW_PROFILE=1" in stage
 
 
-def test_preview_image_shares_a_base_that_has_no_adb():
-    stages = dockerfile_stages()
-    assert re.search(r"(?m)^FROM runtime-base AS preview", (ROOT / "Dockerfile").read_text())
-    assert "adb" not in stages["runtime-base"].lower()
+def test_preview_image_uses_a_python_base_without_the_live_install_stages():
+    assert re.search(r"(?m)^FROM python:\S+ AS preview$", (ROOT / "Dockerfile").read_text())
 
 
 def test_default_build_target_is_still_the_live_console_with_adb():

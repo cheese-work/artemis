@@ -15,6 +15,7 @@
 """Failure ledger at the server API seam, using the real messages of the 2026-10-07 runs."""
 
 import asyncio
+from contextlib import contextmanager
 import json
 import re
 import sqlite3
@@ -878,6 +879,62 @@ async def test_goal_word_redaction_does_not_split_defect_keys_or_leak_cause(libr
     assert "Tap" not in second_row["evidence"]
 
 
+@pytest.mark.parametrize(
+    ("goal", "detail", "expected_detail"),
+    [
+        (
+            "Open Settings, tap Wi-Fi and check the device name",
+            "on this device action button in Settings",
+            "on this device action button in [goal redacted]",
+        ),
+        (
+            "Open Settings, tap Wi-Fi and check the device name",
+            "during tap Wi-Fi and check",
+            "during [goal redacted]",
+        ),
+        (
+            "Open Settings, tap Wi-Fi and check the device name",
+            "on the device action button",
+            "on [goal redacted] action button",
+        ),
+        (
+            "Open Settings, tap Wi-Fi and check the device name",
+            "while trying: OPEN  SETTINGS,\ttap Wi-Fi and CHECK the DEVICE name",
+            "while trying: [goal redacted]",
+        ),
+        (
+            "tap device then open app",
+            "while trying to tap device",
+            "while trying to [goal redacted]",
+        ),
+        (
+            "tap redacted settings",
+            "with token=unredactedvalue",
+            "with token=[REDACTED]",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_goal_redaction_keeps_isolated_ledger_words_readable(
+    library, admin, goal, detail, expected_detail
+):
+    prefix = "Tap failed at (540, 1200)"
+    sid = seed_run(
+        library,
+        status="completed",
+        goal=goal,
+        steps=[("click", _bad(f"{prefix} {detail}"))],
+    )
+
+    await collect(admin)
+
+    view = await failures(admin)
+    (row,) = by_session(view, sid)
+    cause = next(cause for cause in view["causes"] if sid in cause["run_ids"])
+    assert row["evidence"] == cause["evidence_excerpt"] == f"{prefix} {expected_detail}"
+    assert goal.casefold() not in json.dumps(view).casefold()
+
+
 @pytest.mark.asyncio
 async def test_api_omits_goal_words_from_cause_when_error_names_goal_label(library, admin):
     goal = "Settings"
@@ -930,7 +987,7 @@ def test_defect_key_uses_category_and_normalizes_device_identifiers():
 
 @pytest.mark.asyncio
 async def test_ledger_migration_preserves_existing_rows(library, admin):
-    goal = "legacy private goal"
+    goal = "legacy private device"
     sid = seed_run(library, status="completed", goal=goal)
     occurred = time.time()
     with sqlite3.connect(library.db) as conn:
@@ -959,8 +1016,8 @@ async def test_ledger_migration_preserves_existing_rows(library, admin):
             "'empty_target_list', ?, ?, ?, 'browser', ?, ?, ?)",
             (
                 sid,
-                f"legacy-cause|{goal}",
-                f"legacy evidence {goal}",
+                "legacy-cause|device needs service",
+                f"legacy evidence {goal} on the device action button",
                 SERIAL,
                 "qa@example.com",
                 occurred,
@@ -988,6 +1045,14 @@ async def test_ledger_migration_preserves_existing_rows(library, admin):
     rows = by_session(view, sid)
 
     assert [row["signal"] for row in rows] == ["run_step", "run_step"]
+    step = next(row for row in rows if row["scope"] == "step")
+    assert (
+        step["evidence"] == "[goal redacted] evidence [goal redacted] on the device action button"
+    )
+    step_cause = next(cause for cause in view["causes"] if cause["scope"] == "step")
+    assert step_cause["defect_key"] == failure_ledger._defect_key(
+        "smartqa_agent", "empty_target_list", "legacy-cause|[goal redacted] needs service"
+    )
     assert goal not in json.dumps(view)
     with sqlite3.connect(library.db) as conn:
         columns = {record[1] for record in conn.execute("PRAGMA table_info(failure_ledger)")}
@@ -1305,6 +1370,61 @@ async def test_only_admins_reach_the_failure_endpoints(library, qa, anonymous, m
 
 
 # -- deletion, retention and concurrency -----------------------------------------------------
+
+
+@pytest.mark.parametrize("autocommit", [True, False], ids=["autocommit", "deferred"])
+def test_collect_does_not_reinsert_rows_after_concurrent_purge(library, monkeypatch, autocommit):
+    from apps.admin_console.services import run_purge
+
+    gone = seed_run(library, stdout=f"{OFFLINE}\n", steps=[("click", _bad(EMPTY_LIST))])
+    seed_recording(library, gone, "scrcpy failed")
+    kept = seed_run(library, stdout=f"{OFFLINE}\n")
+    real_db_session = failure_ledger.db_session
+
+    @contextmanager
+    def collector_connection(db_path):
+        with real_db_session(db_path) as conn:
+            # Exercise both SQLite transaction modes with real, separate purge connections.
+            if autocommit:
+                conn.isolation_level = None
+            yield conn
+
+    monkeypatch.setattr(failure_ledger, "db_session", collector_connection)
+    real_evidence = failure_ledger._run_evidence
+    purged = []
+
+    def evidence_then_purge(row, *args, **kwargs):
+        evidence = real_evidence(row, *args, **kwargs)
+        if row["session_id"] == gone:
+            # Candidates and evidence are cached; purge must commit before collection resumes.
+            run_purge.purge_run(library.db, library.traces, gone, vacuum=False)
+            assert library.count("sessions", gone) == 0
+            assert library.count("failure_ledger", gone) == 0
+            purged.append(gone)
+        return evidence
+
+    monkeypatch.setattr(failure_ledger, "_run_evidence", evidence_then_purge)
+
+    result = failure_ledger.collect()
+
+    assert purged == [gone]
+    assert result["scanned"] == 4  # Purged run, step and recording, plus the surviving run.
+    assert library.count("failure_ledger", gone) == 0
+    assert library.count("failure_ledger", kept) == 2
+    assert result["inserted"] == 2
+
+
+def test_collect_after_purge_leaves_no_ledger_rows(library):
+    from apps.admin_console.services import run_purge
+
+    gone = seed_run(library, stdout=f"{OFFLINE}\n", steps=[("click", _bad(EMPTY_LIST))])
+    assert failure_ledger.collect()["inserted"] > 0
+
+    run_purge.purge_run(library.db, library.traces, gone, vacuum=False)
+
+    assert library.count("sessions", gone) == 0
+    assert failure_ledger.collect() == {"scanned": 0, "inserted": 0}
+    assert library.count("failure_ledger", gone) == 0
 
 
 @pytest.mark.asyncio

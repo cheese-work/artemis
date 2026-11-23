@@ -28,6 +28,8 @@ TTL_RANGE_S = (10.0, 3600.0)
 HYSTERESIS_S = 5.0
 # How often the lifecycle tick expires silent connections and settles held states.
 TICK_S = 1.0
+DEFAULT_EVENT_RETENTION_DAYS = 30
+COMPACT_EVERY_S = 3600
 # What a source can report; running beats busy beats idle when connections disagree.
 REPORTED = ("running", "busy", "idle", "disconnected")
 
@@ -47,6 +49,22 @@ def device_ttl_s() -> float:
         )
         return DEFAULT_TTL_S
     return ttl
+
+
+def device_event_retention_s() -> int:
+    raw = os.environ.get("ARTEMIS_DEVICE_EVENT_RETENTION_DAYS", str(DEFAULT_EVENT_RETENTION_DAYS))
+    try:
+        days = int(raw)
+    except ValueError:
+        days = 0
+    if not 1 <= days <= 3650:
+        logger.warning(
+            "Invalid ARTEMIS_DEVICE_EVENT_RETENTION_DAYS=%r; using %s days",
+            raw,
+            DEFAULT_EVENT_RETENTION_DAYS,
+        )
+        days = DEFAULT_EVENT_RETENTION_DAYS
+    return days * 86400
 
 
 def server_time() -> float:
@@ -75,22 +93,16 @@ class DeviceReconciler:
         self._ttl = device_ttl_s() if ttl_s is None else ttl_s
         self._hold = hysteresis_s
         self._clock = clock
+        self._retention_s = device_event_retention_s()
+        self._next_compaction = -math.inf
         self._devices: dict[str, _Device] = {}
         self._lock = threading.Lock()
 
     def start(self) -> None:
-        """Write ``unknown`` for every device last recorded in a known state.
-
-        Nobody watched while the server was down, so the timeline must not claim the last
-        known state ran on until now.
-        """
-        now = self._clock()
+        """Recover the downtime as ``unknown`` before accepting new observations."""
         with self._lock:
-            for device_id, state in self._events.latest_states().items():
-                device = self._devices.setdefault(device_id, _Device())
-                device.committed = state
-                if state != UNKNOWN:
-                    self._commit(device_id, device, UNKNOWN, now, reason="startup")
+            self._events.begin_boot(self._clock())
+            self._devices.clear()
 
     def heartbeat(self, device_id: str, connection_id: str, state: str) -> None:
         if state not in REPORTED:
@@ -103,10 +115,14 @@ class DeviceReconciler:
 
     def tick(self) -> None:
         """Re-evaluate every device: expire silent connections and settle held states."""
-        now = self._clock()
         with self._lock:
+            now = self._clock()
             for device_id, device in self._devices.items():
                 self._evaluate(device_id, device, now)
+            self._events.checkpoint(now)
+            if now >= self._next_compaction:
+                self._events.compact_states(now - self._retention_s)
+                self._next_compaction = now + COMPACT_EVERY_S
 
     def state(self, device_id: str) -> str:
         """The committed state; ``unknown`` for a device nobody has reported."""

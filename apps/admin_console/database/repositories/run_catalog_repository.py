@@ -154,7 +154,7 @@ class RunCatalogRepository:
         limit: int = 50,
         count: bool = False,
     ) -> tuple[str, list[Any]]:
-        """SQL for one page, newest first, seeking past ``cursor`` on the start_time index.
+        """SQL for one page, ranked for FTS or newest first on the start_time index.
 
         Runs without a start time sort last; ``nulls=True`` selects that lane, which
         ``list_runs`` queries only once the dated runs are exhausted.
@@ -208,7 +208,7 @@ class RunCatalogRepository:
         if until is not None:
             where.append("s.start_time < ?")
             params.append(until)
-        if match:
+        if match and count:
             where.append("m.rid IN (SELECT rowid FROM runs_fts WHERE runs_fts MATCH ?)")
             params.append(match)
         if terms:
@@ -216,11 +216,30 @@ class RunCatalogRepository:
             where.append(clause)
             params += term_params
         if count:
+            if cursor:
+                where.append("m.session_id = ?")
+                params.append(cursor[1])
             return (
                 "SELECT COUNT(*) FROM sessions s JOIN run_meta m ON m.session_id = s.session_id "
                 f"WHERE {' AND '.join(where)}",
                 params,
             )
+        if match:
+            rank = run_catalog.FTS_RANK_ORDER
+            sql = (
+                "WITH hits AS MATERIALIZED ("
+                f"SELECT m.session_id, {run_catalog.FTS_RANK_COLUMNS} "
+                "FROM runs_fts JOIN run_meta m ON m.rid = runs_fts.rowid "
+                "JOIN sessions s ON s.session_id = m.session_id "
+                f"WHERE runs_fts MATCH ? AND {' AND '.join(where)}) "
+                f"SELECT {_COLUMNS} FROM hits JOIN run_meta m ON m.session_id = hits.session_id "
+                "JOIN sessions s ON s.session_id = hits.session_id"
+            )
+            params.insert(0, match)
+            if cursor:
+                sql += f" WHERE ({rank}) > (SELECT {rank} FROM hits WHERE session_id = ?)"
+                params.append(cursor[1])
+            return f"{sql} ORDER BY {rank} LIMIT ?", [*params, limit]
         if nulls:
             where.append("s.start_time IS NULL")
             if cursor and cursor[0] is None:
@@ -262,19 +281,30 @@ class RunCatalogRepository:
                 match=match, terms=terms, count=True, **filters
             )
             total = conn.execute(count_sql, count_params).fetchone()[0]
-            rows: list[sqlite3.Row] = []
-            for nulls in (False, True):
-                if len(rows) > limit or (nulls is False and decoded and decoded[0] is None):
-                    continue
+            if match:
                 sql, params = self.list_query(
-                    match=match,
-                    terms=terms,
-                    cursor=decoded,
-                    nulls=nulls,
-                    limit=limit + 1 - len(rows),
-                    **filters,
+                    match=match, cursor=decoded, limit=limit + 1, **filters
                 )
-                rows += conn.execute(sql, params).fetchall()
+                rows = conn.execute(sql, params).fetchall()
+                if decoded and not rows:
+                    anchor_sql, anchor_params = self.list_query(
+                        match=match, cursor=decoded, count=True, **filters
+                    )
+                    if not conn.execute(anchor_sql, anchor_params).fetchone()[0]:
+                        raise InvalidCursor("cursor is not a current search hit")
+            else:
+                rows = []
+                for nulls in (False, True):
+                    if len(rows) > limit or (nulls is False and decoded and decoded[0] is None):
+                        continue
+                    sql, params = self.list_query(
+                        terms=terms,
+                        cursor=decoded,
+                        nulls=nulls,
+                        limit=limit + 1 - len(rows),
+                        **filters,
+                    )
+                    rows += conn.execute(sql, params).fetchall()
             page, more = rows[:limit], len(rows) > limit
             runs = [_run_from_row(row) for row in page]
             self._attach_chat(conn, runs)

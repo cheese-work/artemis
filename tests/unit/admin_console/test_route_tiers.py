@@ -87,6 +87,7 @@ def _assert_routes_have_declared_tiers(routes):
                 public_note_controls = {
                     "/api/runs/{session_id}/annotations",
                     "/api/runs/{session_id}/annotations/{annotation_id}",
+                    "/api/runs/{session_id}/comments",
                 }
                 if path in public_note_controls:
                     from apps.admin_console.core.ownership import evidence_scope
@@ -101,6 +102,7 @@ def _assert_routes_have_declared_tiers(routes):
                     "lifecycle",
                     "loopback",
                     "agent",
+                    "admin_or_service",
                 } or (tier == "public" and path in public_task_controls | public_note_controls), (
                     f"Unprotected mutation: {path}"
                 )
@@ -125,6 +127,11 @@ def _dependency_calls(route) -> set[object]:
 
 def test_every_registered_route_has_a_declared_tier_and_guard():
     _assert_routes_have_declared_tiers(app.routes)
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_run_comment_routes_are_public_tier(method):
+    assert route_tier("/api/runs/{session_id}/comments", {method}) == "public"
 
 
 @pytest.mark.parametrize(

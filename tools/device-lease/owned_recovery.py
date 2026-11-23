@@ -130,6 +130,8 @@ class OwnedRecovery:
         endpoint = next(d["endpoint"] for d in group["devices"] if d["device_id"] == device)
         result = {}
         for line in data.splitlines():
+            if not line.strip():
+                continue  # adb prints a newline even when the list is empty.
             fields = line.split()
             if len(fields) != 3:
                 raise ValueError("invalid forward census")
@@ -147,6 +149,84 @@ class OwnedRecovery:
                 result[local] = remote
         return result
 
+    def fence_startup(self, group, *, timeout):
+        """Fence a startup-origin AVD without ADB or userdata mutations."""
+        from startup import LinuxStartupIO, _journal, pinned_device
+
+        deadline = self.monotonic() + timeout
+
+        def remaining():
+            value = deadline - self.monotonic()
+            if value <= 0:
+                raise TimeoutError()
+            return value
+
+        proof = group["startup"]
+        device = pinned_device(self.registry, proof)
+        if [(item["device_id"], item["endpoint"]) for item in group["devices"]] != [
+            (device.device_id, f"emulator-{device.console_port}")
+        ]:
+            return False
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT generation,grant_ref,state,journal FROM broker_launches WHERE lease_id=?",
+                (group["lease_id"],),
+            ).fetchone()
+        changes = self._changes(group)
+        identities = []
+        if row is not None:
+            generation, grant, state, journal = row
+            if (generation, grant) != (
+                proof["generation"],
+                proof["grant"]["reference"],
+            ) or state not in {"paused", "executing"}:
+                return False
+            journal = _journal(json.loads(journal))
+            identities = [journal["child"], journal["worker"]]
+            if not changes or changes[0] != dict(
+                kind="work",
+                device_id=device.device_id,
+                complete=True,
+                processes=[journal["worker"], journal["child"]],
+                forwards=[],
+            ):
+                return False
+
+        def resource_users():
+            remaining()
+            sockets = LinuxStartupIO.socket_owners()
+            return (
+                LinuxStartupIO.resource_users(device)
+                | sockets.get(device.console_port, set())
+                | sockets.get(device.adb_port, set())
+            )
+
+        owned = {identity["pid"] for identity in identities}
+        if resource_users() - owned:
+            return False
+        if owned:
+            if owned & {1, os.getpid(), self._daemon_pid(remaining()), group["binding"]["pid"]}:
+                return False
+            for identity in identities:
+                current = self._identity(identity["pid"])
+                if current is not None and (
+                    current != identity or self._descendants(identity) - owned
+                ):
+                    return False
+            for identity in identities:
+                if self._identity(identity["pid"]) is not None and not self._stop(
+                    identity, remaining()
+                ):
+                    return False
+            if any(self._identity(pid) is not None for pid in owned):
+                return False
+        return (
+            not resource_users()
+            and group["access_phase"] == "starting"
+            and len(changes) == bool(identities)
+            and remaining() > 0
+        )
+
     def fence(self, group, *, timeout):
         deadline = self.monotonic() + timeout
 
@@ -162,7 +242,7 @@ class OwnedRecovery:
             work = [c for c in changes if c["kind"] == "work"]
             devices = {d["device_id"] for d in group["devices"]}
             if (
-                group["binding"].get("mode") != "local"
+                group["binding"].get("mode") not in {"local", "managed"}
                 or {w["device_id"] for w in work} != devices
                 or len(work) != len(devices)
             ):
@@ -173,13 +253,16 @@ class OwnedRecovery:
                     if identity["pid"] in identities and identities[identity["pid"]] != identity:
                         return False
                     identities[identity["pid"]] = identity
-            root = {k: group["binding"][k] for k in ("mode", "pid", "process_start", "boot_id")}
+            root = {
+                "mode": "local",
+                **{k: group["binding"][k] for k in ("pid", "process_start", "boot_id")},
+            }
             if identities.get(root["pid"]) != root:
                 return False
             daemon = self._daemon_pid(remaining())
             if set(identities) & {1, os.getpid(), daemon}:
                 return False
-            if self._descendants(group["binding"]) - identities.keys():
+            if self._descendants(root) - identities.keys():
                 return False
             # Validate EVERY identity and descendant before the first signal.
             for pid, identity in identities.items():
@@ -196,7 +279,7 @@ class OwnedRecovery:
                     return False
             if any(self._identity(pid) is not None for pid in identities):
                 return False
-            if self._descendants(group["binding"], allow_missing=True):
+            if self._descendants(root, allow_missing=True):
                 return False
             for item in work:
                 device = item["device_id"]

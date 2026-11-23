@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import json
 import logging
 import os
 from pathlib import Path
+from sys import float_info
 import time
-from typing import Any
+from typing import Any, NoReturn
 
 import anyio
 from fastapi import APIRouter, Depends, Request, WebSocket
@@ -30,6 +32,7 @@ from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import RegistryError, host_registry
 from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.services.host_admission import host_admission
+from apps.admin_console.services.recording_assignments import RecordingAssignmentStore
 from artemis.runtime.host_protocol import CONTRACT, Frame, ProtocolError
 
 logger = logging.getLogger(__name__)
@@ -38,13 +41,14 @@ router = APIRouter(prefix="/api/agent", tags=["agent"])
 HELLO_TIMEOUT_SECONDS = 10
 DEAD_AFTER_SECONDS = CONTRACT.dead_seconds
 MIN_WAIT_SECONDS = 0.05
+MAX_RECORDING_SNAPSHOT_ROWS = 64
 
 
 def _audience(headers: Any) -> str:
     return headers.get("host", "").strip().casefold()
 
 
-def _json_message(message: dict) -> Any:
+def _json_message(message: Mapping[str, Any]) -> Any:
     payload = message.get("text")
     if not isinstance(payload, str):
         raise ProtocolError("Invalid host message")
@@ -54,6 +58,58 @@ def _json_message(message: dict) -> Any:
     except UnicodeError as error:
         raise ProtocolError("Invalid host UTF-8") from error
     return json.loads(payload)
+
+
+def _recording_store() -> RecordingAssignmentStore:
+    return RecordingAssignmentStore(host_registry.db_path, clock=host_registry.clock)
+
+
+def _handle_recording_ack(
+    store: RecordingAssignmentStore, host_id: str, message: dict[str, Any]
+) -> None:
+    recording_id = message.get("recording_id")
+    revision = message.get("revision")
+    if not isinstance(recording_id, str) or len(recording_id) > 64:
+        reason = "invalid_recording_id"
+    elif type(revision) is not int or revision < 1:
+        reason = "invalid_revision"
+    else:
+        if store.acknowledge(host_id, recording_id, revision):
+            logger.info(
+                "event=recording_acked host_id=%s recording_id=%s revision=%d",
+                host_id,
+                recording_id,
+                revision,
+            )
+        return
+    logger.info("event=recording_ack_ignored host_id=%s reason=%s", host_id, reason)
+
+
+def _handle_recorder_ready(
+    store: RecordingAssignmentStore, host_id: str, message: dict[str, Any], clock_offset: float
+) -> None:
+    recording_id = message.get("recording_id")
+    revision = message.get("revision")
+    started_at = message.get("started_at")
+    if not isinstance(recording_id, str) or len(recording_id) > 64:
+        reason = "invalid_recording_id"
+    elif type(revision) is not int or revision < 1:
+        reason = "invalid_revision"
+    elif (
+        type(started_at) not in (int, float) or not -float_info.max <= started_at <= float_info.max
+    ):
+        reason = "invalid_started_at"
+    elif store.mark_ready(host_id, recording_id, revision, float(started_at), clock_offset):
+        logger.info(
+            "event=recorder_ready host_id=%s recording_id=%s revision=%d",
+            host_id,
+            recording_id,
+            revision,
+        )
+        return
+    else:
+        reason = "not_matched"
+    logger.info("event=recorder_ready_ignored host_id=%s reason=%s", host_id, reason)
 
 
 class EnrollRequest(BaseModel):
@@ -107,7 +163,7 @@ def _release_artifact(artifact: str) -> FileResponse:
     return FileResponse(path, media_type=media_type, filename=artifact)
 
 
-def _artifact_unavailable() -> None:
+def _artifact_unavailable() -> NoReturn:
     # The installer and binaries ship with the host agent release (B3).
     raise AdminAPIError(
         404,
@@ -171,8 +227,11 @@ async def connect(ws: WebSocket) -> None:
     reason = "disconnected"
     try:
         try:
-            hello = _json_message(await asyncio.wait_for(ws.receive(), HELLO_TIMEOUT_SECONDS))
+            frame = await asyncio.wait_for(ws.receive(), HELLO_TIMEOUT_SECONDS)
+            received_at = host_registry.clock()
+            hello = _json_message(frame)
             host = host_registry.authenticate_hello(hello, _audience(ws.headers))
+            clock_offset = received_at - int(hello["timestamp"])
             session = host_registry.begin_connection(host)
         except RegistryError as error:
             await ws.send_json({"type": "error", "code": error.code, **error.extra})
@@ -188,6 +247,8 @@ async def connect(ws: WebSocket) -> None:
         tunnel = await host_tunnels.attach(host_id, generation, ws, shared_serials)
         await host_hub.replace(host_id, ws, generation)
         logger.info("event=host_connected host_id=%s generation=%d", host_id, generation)
+        recording_store = _recording_store()
+        recordings = recording_store.reconcile(host_id, host_registry.clock())
         connected = {
             "type": "connected",
             "token": session["token"],
@@ -196,6 +257,17 @@ async def connect(ws: WebSocket) -> None:
             "protocol_version": hr.PROTOCOL_VERSION,
             "min_supported": hr.MIN_SUPPORTED,
             "leases": host_tunnels.leased_devices(host_id),
+            "recordings": [
+                {
+                    "recording_id": assignment.recording_id,
+                    "session_id": assignment.session_id,
+                    "run_generation": assignment.run_generation,
+                    "desired_state": assignment.desired_state,
+                    "revision": assignment.revision,
+                    "deadline": assignment.deadline,
+                }
+                for assignment in recordings[:MAX_RECORDING_SNAPSHOT_ROWS]
+            ],
         }
         # From here, lease changes are sent as they happen; nothing can precede "connected".
         tunnel.ready = True
@@ -276,6 +348,10 @@ async def connect(ws: WebSocket) -> None:
                 fields = host_registry.audit_event(message)
                 if fields is not None:  # never echo an unvalidated value into the log
                     logger.info("event=%s host_id=%s%s", message["event"], host_id, fields)
+            elif kind == "recording_ack":
+                _handle_recording_ack(recording_store, host_id, message)
+            elif kind == "recorder_ready":
+                _handle_recorder_ready(recording_store, host_id, message, clock_offset)
     except (ProtocolError, json.JSONDecodeError):
         reason = "bad_frame"
         if ws.application_state == WebSocketState.CONNECTED:

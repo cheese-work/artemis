@@ -25,7 +25,12 @@ from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.config.host_agent import host_agent_enabled
 from artemis.runtime.host_endpoints import HostOffline, host_endpoints
 from apps.admin_console.services.host_registry import host_registry
-from apps.admin_console.core.access_control import AdminAPIError
+from apps.admin_console.core.access_control import (
+    AccessIdentity,
+    AdminAPIError,
+    public_tier,
+    require_qa_or_service,
+)
 from apps.admin_console.core.device_ownership import (
     may_use_device,
     no_device_for,
@@ -142,7 +147,11 @@ async def get_models(actor: OwnerScope = Depends(actor_scope)):
 
 
 @router.post("/api/run")
-async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)):
+async def run_task(
+    request: RunRequest,
+    actor: OwnerScope = Depends(actor_scope),
+    identity: AccessIdentity = Depends(public_tier),
+):
     scope = require_actor(actor)
     host_id = request.device_ref.host_id if request.device_ref else None
     requested_serial = request.device_ref.serial if request.device_ref else request.device_serial
@@ -161,6 +170,47 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             status_code=400,
             detail="Either 'goal' or 'goals' list must be provided.",
         )
+
+    smartqa = request.options.smartqa if request.options else None
+    smartqa_job = None
+    if smartqa:
+        from apps.admin_console.routers.leases import _holder
+        from apps.admin_console.services.agent_qa.binding import stored_apk, verify_device
+        from apps.admin_console.services.agent_qa.worker import PACKAGE
+        from artemis.runtime.endpoint_transport import EndpointTransport
+
+        await require_qa_or_service(identity)
+        if (
+            smartqa.mode != "route"
+            or len(incoming_goals) != 1
+            or request.device_ref
+            or request.bridge_session_id
+            or request.app_path
+            or request.images
+            or not PACKAGE.fullmatch(request.locked_app_package or "")
+        ):
+            raise AdminAPIError(
+                422,
+                "SmartQA needs one scripted route and a valid app package.",
+                "smartqa_route_required",
+                "Use --route with an uploaded APK and a device lease.",
+            )
+        holder = _holder(identity)
+        transport = EndpointTransport.local()
+        requested_serial = await asyncio.to_thread(verify_device, smartqa, holder, transport)
+        if request.device_serial and request.device_serial != requested_serial:
+            raise AdminAPIError(
+                409,
+                "The device does not match the lease.",
+                "device_mismatch",
+                "Use the leased emulator.",
+            )
+        stored_apk(smartqa)
+        smartqa_job = {
+            "options": smartqa.model_dump(),
+            "holder": holder,
+            "package": request.locked_app_package,
+        }
 
     # A client-chosen id names folders under traces: refuse anything unsafe up front.
     if request.session_id and not run_images.is_safe_session_id(str(request.session_id)):
@@ -183,8 +233,10 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             )
         goal_images = await asyncio.to_thread(run_images.validate, request.images)
 
-    selected_model = await model_discovery.resolve(
-        request.model.model_dump() if request.model else None
+    selected_model = (
+        None
+        if smartqa
+        else await model_discovery.resolve(request.model.model_dump() if request.model else None)
     )
 
     if request.bridge_session_id:
@@ -236,6 +288,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
                 )
             # A retry echoes the run's goal and queue item back: owner or admin only.
             task_payload = dict(existing_item or persisted_session or {})
+            task_payload.pop("smartqa_job", None)
             task_payload.setdefault("session_id", requested_sid)
             task_payload.setdefault("goal", incoming_goals[0])
             task_payload.setdefault("profile", request.profile or "flash")
@@ -285,7 +338,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
     # never be selected. Only a successful, non-empty enumeration may reject:
     # an indeterminate one (adb blip, startup) lets the submission queue and
     # fail downstream with a clear error instead.
-    if requested_serial and not host_id:
+    if requested_serial and not host_id and not smartqa:
         try:
             pool = device_pool.pool_for(bridge_endpoint) if bridge_endpoint else device_pool
             rejection = await pool.validate_explicit_serial_async(requested_serial)
@@ -312,7 +365,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
     scoped = scope.enforced and not scope.admin
     device_probe = (
         None
-        if host_id
+        if host_id or smartqa
         else await readiness_engine.run_device_submission_probe(
             target_serial=target_serial,
             may_use=(lambda serial: may_use_device(scope, serial)) if scoped else None,
@@ -367,6 +420,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             bridge_session_id=request.bridge_session_id,
             model=selected_model,
             model_explicit=request.model is not None,
+            **({"smartqa_job": smartqa_job} if smartqa_job else {}),
             **({"host_id": host_id} if host_id else {}),
         )
     except ServerDraining as exc:
@@ -704,7 +758,7 @@ async def _status_payload() -> dict[str, Any]:
         sid = item.get("session_id")
         if sid:
             seen_ids.add(str(sid))
-        queue_data.append(item)
+        queue_data.append({key: value for key, value in item.items() if key != "smartqa_job"})
 
     for g_item in global_queued:
         sid = str(g_item.get("session_id"))

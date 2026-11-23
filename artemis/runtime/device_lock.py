@@ -33,8 +33,12 @@ from artemis.config.paths import get_temp_dir
 from artemis.runtime.process_probe import pid_is_alive
 
 
+LEASE_HANDOFF_ENV = "ARTEMIS_DEVICE_LEASE_HANDOFF"
+MANAGED_AVD_ADMISSION_TIMEOUT_SECONDS = 2.0
+
+
 class DeviceBusyError(RuntimeError):
-    """Raised when another Artemis process already owns a device."""
+    """Raised when Artemis cannot acquire a device for execution."""
 
 
 class ConcurrencyMode:
@@ -145,6 +149,7 @@ class DeviceExecutionLock:
         self.ingress = ingress or os.getenv("ARTEMIS_TASK_INGRESS") or "sdk"
         self._queue_path: Path | None = None
         self._acquired = False
+        self._handoff = os.getenv(LEASE_HANDOFF_ENV)
 
     @classmethod
     def _device_lock_path(
@@ -557,41 +562,140 @@ class DeviceExecutionLock:
 
     @classmethod
     @contextmanager
-    def _admission_guard(cls) -> Iterator[None]:
-        """Hold the broker's claim guard while creating an owner record.
+    def _admission_guard(cls, *, timeout: float | None = None) -> Iterator[bool]:
+        """Try once for the broker's claim guard, or wait up to an explicit timeout.
 
         The DLP-1 broker reads Artemis owner records inside the same exclusion,
         so it never sees a half-written record or races a new claim into a grant.
         """
         path = os.getenv(cls.ADMISSION_GUARD_ENV)
         if not path:
-            yield
+            yield True
             return
         import fcntl  # POSIX only; a configured guard on another OS fails closed.
 
         fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            yield
+            deadline = None if timeout is None else time.monotonic() + timeout
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    if deadline is None:
+                        yield False
+                        return
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise DeviceBusyError(
+                            f"Timed out waiting for device broker admission after {timeout:.1f}s."
+                        ) from exc
+                    time.sleep(min(remaining, cls._DEFAULT_POLL_INTERVAL_SECONDS))
+            yield True
         finally:
             os.close(fd)
 
-    def _try_acquire_owner_lock(self) -> bool:
-        with self._admission_guard():
+    def _try_acquire_owner_lock(self, *, handoff_guard_timeout: float | None = None) -> bool | None:
+        """Return True if acquired, False if occupied, or None if admission is unavailable."""
+        handoff = self._handoff if self._handoff is not None else os.getenv(LEASE_HANDOFF_ENV)
+        if handoff is not None:
+            return self._try_broker_owner_lock(handoff, guard_timeout=handoff_guard_timeout)
+        with self._admission_guard() as admitted:
+            if not admitted:
+                return None
             guard = os.getenv(self.ADMISSION_GUARD_ENV)
             database = os.getenv("ARTEMIS_DEVICE_CLAIMS_DB")
             if guard or database:
                 if not guard or not database:
-                    return False
-                from device_lease.claims import check_sdk_available
+                    return None
+                from device_lease.claims import (
+                    DeviceClaimOccupied,
+                    UnknownSdkClaimIdentity,
+                    check_sdk_available,
+                )
 
                 try:
                     check_sdk_available(
                         database, guard, self.device_id, self.path.parent, self.path
                     )
+                except UnknownSdkClaimIdentity as exc:
+                    raise DeviceBusyError(
+                        "This phone connection is not registered with the device broker. "
+                        "Contact an administrator to enable it."
+                    ) from exc
+                except DeviceClaimOccupied:
+                    return False
                 except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
-                    return False  # Missing/stale census, SQL failure or conflict: no owner file.
+                    return None
             return self._try_acquire_owner_lock_unguarded()
+
+    def _try_broker_owner_lock(
+        self, handoff: str, *, guard_timeout: float | None = None
+    ) -> bool | None:
+        from device_lease.claims import check_sdk_handoff
+        from device_lease.transport import rpc
+
+        try:
+            data = json.loads(handoff)
+            if (
+                not isinstance(data, dict)
+                or set(data)
+                != {"socket", "lease_id", "device_id", "issue_id", "generation", "phase"}
+                or not isinstance(data["socket"], str)
+                or not Path(data["socket"]).is_absolute()
+            ):
+                return None
+            guard = os.environ[self.ADMISSION_GUARD_ENV]
+            database = os.environ["ARTEMIS_DEVICE_CLAIMS_DB"]
+            if not Path(guard).is_file() or not Path(database).is_file():
+                return None
+            socket_path = data.pop("socket")
+            request = data | dict(
+                agent_id=os.environ["MULTICA_AGENT_ID"],
+                run_id=os.environ["MULTICA_TASK_ID"],
+                binding_id=os.environ["MULTICA_RUN_BINDING_ID"],
+                guard=guard,
+                database=database,
+                lock_dir=str(self.path.parent),
+                owner=self._owner_payload(
+                    self.token,
+                    self.device_id,
+                    self.description,
+                    session_id=self.session_id,
+                    ingress=self.ingress,
+                    lock_scope=self.lock_scope,
+                ),
+            )
+            response = rpc(socket_path, {"op": "execution-lock", "args": request})
+            if response != {"acquired": True}:
+                return False if response == {"code": "execution_lock_busy"} else None
+            with self._admission_guard(timeout=guard_timeout) as admitted:
+                if not admitted:
+                    return None
+                check_sdk_handoff(
+                    database,
+                    guard,
+                    data["lease_id"],
+                    data["device_id"],
+                    self.device_id,
+                    self.path,
+                    self.token,
+                    os.getpid(),
+                )
+            self._acquired = True
+            return True
+        except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
+            return None
+
+    def validate_handoff(self) -> bool:
+        return (
+            self._acquired
+            and self._handoff is not None
+            and self._try_broker_owner_lock(
+                self._handoff, guard_timeout=MANAGED_AVD_ADMISSION_TIMEOUT_SECONDS
+            )
+            is True
+        )
 
     def _try_acquire_owner_lock_unguarded(self) -> bool:
         owner_payload = self._owner_payload(
@@ -664,12 +768,14 @@ class DeviceExecutionLock:
         *,
         blocking: bool = True,
         timeout: float | None = None,
+        admission_timeout: float | None = None,
         poll_interval: float = _DEFAULT_POLL_INTERVAL_SECONDS,
         cancel_event=None,
     ) -> None:
-        """Wait in FIFO order and acquire exclusive access to the target Artemis device."""
+        """Wait in FIFO order; a nonblocking handoff may still wait for broker readback."""
         self._queue_path = self._claim_or_create_queue_ticket()
         started_at = time.monotonic()
+        admission_started_at = None
         effective_concurrency = self.effective_concurrency
         try:
             while True:
@@ -695,6 +801,7 @@ class DeviceExecutionLock:
                         )
                     ]
                     if len(active_other_owners) >= effective_concurrency:
+                        admission_started_at = None
                         if not blocking:
                             owner_desc = (
                                 active_other_owners[0].description
@@ -739,10 +846,26 @@ class DeviceExecutionLock:
                     )
                     is_eligible = bool(device_queue and device_queue[0] == self._queue_path)
 
-                if is_eligible and self._try_acquire_owner_lock():
+                attempt_started_at = time.monotonic()
+                if not is_eligible:
+                    acquired = False
+                elif not blocking and admission_timeout is not None:
+                    acquired = self._try_acquire_owner_lock(handoff_guard_timeout=admission_timeout)
+                else:
+                    acquired = self._try_acquire_owner_lock()
+                if acquired is True:
                     self._safe_unlink(self._queue_path)
                     self._queue_path = None
                     return
+                if acquired is None and admission_timeout is not None:
+                    if admission_started_at is None:
+                        admission_started_at = attempt_started_at
+                    if time.monotonic() - admission_started_at >= admission_timeout:
+                        raise DeviceBusyError(
+                            f"Timed out waiting for device broker admission after {admission_timeout:.1f}s."
+                        )
+                else:
+                    admission_started_at = None
 
                 if not blocking:
                     owner = self._read_owner(self.path)
