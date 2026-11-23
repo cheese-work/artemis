@@ -25,13 +25,9 @@ def _triggers(workflow):
 
 
 def _jobs():
-    """The jobs that run on the X99 pool: every active job except the untrusted merge_group ones."""
+    """The jobs that run on the X99 pool: every active job that names its own runner."""
     for path in sorted(WORKFLOWS.glob("*.yml")):
         workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-        # A merge_group workflow comes from the queue commit and is untrusted: it follows its own
-        # hosted-runner rule (test_merge_group_jobs_never_select_the_self_hosted_pool).
-        if "merge_group" in _triggers(workflow):
-            continue
         for name, job in workflow["jobs"].items():
             # CHE-3440: a job that only calls the shared reusable workflow in multica-dotfiles has no
             # runner of its own; that workflow picks the runner (checked in multica-dotfiles tests).
@@ -41,28 +37,19 @@ def _jobs():
                 yield path.name, name, workflow, job
 
 
-def _merge_group_jobs():
-    """Every job of a workflow that GitHub starts from a merge-queue commit."""
-    for path in sorted(WORKFLOWS.glob("*.yml")):
-        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if "merge_group" in _triggers(workflow):
-            for name, job in workflow["jobs"].items():
-                yield path.name, name, workflow, job
+def test_pr_ready_queue_job_never_selects_the_self_hosted_pool():
+    """GitHub runs the pr-ready merge_group caller from the queue commit, which a queued PR can rewrite.
 
-
-def test_merge_group_jobs_never_select_the_self_hosted_pool():
-    """GitHub runs a merge_group workflow from the queue commit, which a queued PR can rewrite.
-
-    No owner-name condition authenticates those workflow bytes, so a job they start may carry no
-    runner label at all. The only job is a thin call of the shared reusable queue workflow, whose
-    runner is the GitHub-hosted `ubuntu-latest` (pinned in the multica-dotfiles tests).
+    No owner-name condition authenticates those workflow bytes, so its job may carry no runner label at
+    all: it is a thin call of the shared reusable queue workflow, whose runner is the GitHub-hosted
+    `ubuntu-latest` (pinned in the multica-dotfiles tests).
     """
-    jobs = list(_merge_group_jobs())
-    assert [(file, name) for file, name, _w, _j in jobs] == [("pr-ready-queue.yml", "pr-ready")]
-    for file, name, workflow, job in jobs:
-        assert "runs-on" not in job, (file, name)
-        assert "self-hosted" not in json.dumps([workflow, job]), (file, name)
-        assert "cheese-x99" not in json.dumps([workflow, job]), (file, name)
+    workflow = yaml.safe_load((WORKFLOWS / "pr-ready-queue.yml").read_text(encoding="utf-8"))
+    assert list(workflow["jobs"]) == ["pr-ready"]
+    job = workflow["jobs"]["pr-ready"]
+    assert "runs-on" not in job
+    assert "self-hosted" not in json.dumps(workflow)
+    assert "cheese-x99" not in json.dumps(workflow)
 
 
 def test_the_queue_job_is_a_thin_call_with_a_read_only_token_and_no_secret():
