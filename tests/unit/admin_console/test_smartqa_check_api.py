@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
+from urllib.parse import urlencode
 
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from apps.admin_console.core.access_control import (
     AccessConfig,
@@ -18,14 +21,29 @@ from apps.admin_console.core.access_control import (
 
 CLIENT_ID = "agent-client.access"
 OTHER_CLIENT_ID = "unmapped-client.access"
+OTHER_QA_ID = "other-qa.access"
+SERVICE_OWNER = "service:" + hashlib.sha256(b"smartqa-agent").hexdigest()
 APK = b"PK\x03\x04" + b"apk-bytes" * 10
 APK_SHA = hashlib.sha256(APK).hexdigest()
 PRINCIPALS = json.dumps(
     {
         CLIENT_ID: {
             "name": "smartqa-agent",
-            "routes": ["POST /api/smartqa/apks", "GET /api/sessions/{session_id}"],
-        }
+            "routes": [
+                "POST /api/smartqa/apks",
+                "GET /api/sessions/{session_id}",
+                "GET /api/smartqa/report",
+                "POST /api/stop",
+            ],
+        },
+        OTHER_QA_ID: {
+            "name": "other-qa",
+            "routes": [
+                "GET /api/smartqa/report",
+                "GET /api/sessions/{session_id}",
+                "POST /api/stop",
+            ],
+        },
     }
 )
 
@@ -45,6 +63,7 @@ def _service_token(private_key: bytes, client_id: str) -> str:
 
 @pytest.fixture
 def call(monkeypatch, tmp_path, library):
+    from apps.admin_console.routers import sessions, smartqa_check
     from apps.admin_console.server import app
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -54,6 +73,8 @@ def call(monkeypatch, tmp_path, library):
     monkeypatch.setenv("ARTEMIS_SERVICE_PRINCIPALS", PRINCIPALS)
     monkeypatch.setenv("ARTEMIS_SMARTQA_CHECK", "1")
     monkeypatch.setenv("ARTEMIS_SMARTQA_APK_DIR", str(tmp_path / "apks"))
+    monkeypatch.setattr(smartqa_check, "TRACES_PATH", library.traces)
+    monkeypatch.setattr(sessions.session_repo, "db_path", library.db)
     monkeypatch.setattr(
         app.state,
         "access_config",
@@ -148,3 +169,128 @@ def test_oversize_chunked_upload_without_content_length_is_cut_off(call, monkeyp
     response = call("POST", "/api/smartqa/apks", content=iter([APK[:10], APK[10:]]))
     assert response.status_code == 413
     assert list(call.apk_dir.iterdir()) == []
+
+
+@pytest.fixture
+def owned_run(library):
+    def seed(**kwargs):
+        session_id = library.seed(**kwargs)
+        with sqlite3.connect(library.db) as connection:
+            connection.execute(
+                "UPDATE run_meta SET requested_by=? WHERE session_id=?", (SERVICE_OWNER, session_id)
+            )
+        return session_id
+
+    return seed
+
+
+def test_service_polls_only_its_live_runs(call, library, owned_run):
+    session_id = owned_run(status="running")
+    path = f"/api/sessions/{session_id}"
+    assert call("GET", path).json()["status"] == "running"
+    assert call("GET", path, client_id=OTHER_QA_ID).status_code == 403
+    with sqlite3.connect(library.db) as connection:
+        connection.execute("UPDATE run_meta SET deleted_at=1 WHERE session_id=?", (session_id,))
+    assert call("GET", path).status_code == 404
+
+
+def test_service_can_stop_its_run_by_id_only(call, monkeypatch, owned_run):
+    from apps.admin_console.routers import tasks
+
+    stopped = []
+
+    def stop_tasks(**kwargs):
+        stopped.append(kwargs["session_id"])
+        return True
+
+    monkeypatch.setattr(tasks.task_queue_service, "stop_tasks", stop_tasks)
+    session_id = owned_run(status="running")
+    target = {"session_id": session_id}
+    assert call("POST", "/api/stop", json=target, client_id=OTHER_QA_ID).status_code == 403
+    assert stopped == []
+    assert call("POST", "/api/stop", json=target).json()["status"] == "stopped"
+    assert stopped == [session_id]
+
+
+@pytest.fixture
+def report_path(library, owned_run):
+    def seed(*, crash=False, dark_sha=APK_SHA, outside_png=False):
+        ids = []
+        for theme in ("light", "dark"):
+            session_id = owned_run()
+            ids.append(session_id)
+            run = {
+                "installed_apk_sha256": APK_SHA if theme == "light" else dark_sha,
+                "steps": [
+                    {
+                        "step": 1,
+                        "theme": theme,
+                        "timestamp": "fixture",
+                        "screen_before": "home",
+                        "screen_after": "home",
+                        "action": {"type": "tap"},
+                        "before_png": "../snap.png" if outside_png else "snap.png",
+                        "after_png": "snap.png",
+                    }
+                ],
+                "logcat_crash": (
+                    "FATAL EXCEPTION: main\nProcess: com.example.sample, PID: 42"
+                    if crash and theme == "dark"
+                    else ""
+                ),
+            }
+            evidence = library.write(
+                session_id,
+                "smartqa/session.json",
+                json.dumps(
+                    {
+                        "package": "com.example.sample",
+                        "declared_screens": [{"id": "home"}],
+                        "themes": {theme: run},
+                    }
+                ),
+            )
+            image = Image.new("RGB", (4, 4))
+            image.putpixel((0, 0), (255, 255, 255))
+            image.save(evidence.with_name("snap.png"))
+            image.save(evidence.parent.parent / "snap.png")
+        return "/api/smartqa/report?" + urlencode(
+            {"apk_sha256": APK_SHA, "session_id": ids}, doseq=True
+        )
+
+    return seed
+
+
+@pytest.mark.parametrize("crash", [False, True])
+def test_report_evaluates_both_themes_for_the_installed_apk(call, report_path, crash):
+    response = call("GET", report_path(crash=crash))
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    body = response.json()
+    assert body["apk_sha256"] == APK_SHA
+    assert body["green"] is not crash
+    assert body["gate"]["rules"][0]["passed"] is not crash
+    assert set(body["themes"]) == {"light", "dark"}
+
+
+def test_report_refuses_mismatched_installed_digest(call, report_path):
+    response = call("GET", report_path(dark_sha="0" * 64))
+    assert response.status_code == 409
+    assert response.json()["code"] == "report_apk_mismatch"
+
+
+def test_report_link_requires_run_access(call, report_path):
+    path = report_path()
+    assert call("GET", path, token=False).status_code == 401
+    assert call("GET", path, client_id=OTHER_QA_ID).status_code == 403
+
+
+def test_report_flag_off_hides_the_report(call, report_path, monkeypatch):
+    monkeypatch.delenv("ARTEMIS_SMARTQA_CHECK")
+    assert call("GET", report_path()).status_code == 404
+
+
+def test_report_does_not_read_capture_outside_its_theme(call, report_path):
+    response = call("GET", report_path(outside_png=True))
+    assert response.status_code == 422
+    assert response.json()["code"] == "report_evidence_invalid"

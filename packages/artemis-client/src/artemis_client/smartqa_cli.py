@@ -100,7 +100,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_RED
     print(json.dumps(result.to_dict(), indent=2))
-    return 0 if result.ok else EXIT_RED
+    return 0 if result.green else EXIT_RED
 
 
 if __name__ == "__main__":

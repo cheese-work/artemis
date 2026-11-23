@@ -726,6 +726,7 @@ _LEASE_GET_PATHS = {
     "/api/leases/dlp-1/{lease_id}",
     "/api/leases/dlp-1/tickets/{ticket_id}",
 }
+_QA_SERVICE_GET_PATHS = _LEASE_GET_PATHS | {"/api/smartqa/report"}
 _LEASE_POST_PATHS = {
     "/api/leases",
     "/api/leases/{lease_id}/renew",
@@ -840,7 +841,7 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "admin_or_service"
     if methods == {"POST"} and path in _SERVICE_MUTATING_PATHS:
         return "admin_or_service"
-    if methods == {"GET"} and path in _LEASE_GET_PATHS:
+    if methods == {"GET"} and path in _QA_SERVICE_GET_PATHS:
         return "qa_or_service"
     if methods == {"POST"} and path in _PUBLIC_MUTATING_PATHS:
         return "public"

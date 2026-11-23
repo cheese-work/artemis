@@ -102,14 +102,16 @@ Interrupts persist `{reason, client_close.reason, visibility_state}` in the life
 
 `smartqa check --apk app.apk --manifest smartqa.yml --themes light,dark [--pool x99-avd | --device <id>] [--route route.json] [--server <url>]`
 ships with `packages/artemis-client`. Per theme it leases a device, submits one run and
-releases the lease. Exit 0 = every theme completed, 1 = a run failed or the check was refused,
-2 = usage error or missing credentials.
+releases the lease. Exit 0 means the exact APK has a green QA verdict, 1 means red or
+unverified, and 2 means a usage error or missing credentials. Gate on `green`, not `ok`:
+`ok` only says that every theme run completed.
 
 - **Auth.** Non-loopback servers need `CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET` (or
   `ARTEMIS_TOKEN`); the CLI refuses to start without them. The client id must be mapped in
   `ARTEMIS_SERVICE_PRINCIPALS`; routes may use `{name}` for one path segment, for example
   `"GET /api/sessions/{session_id}"`. Map `POST /api/smartqa/apks`, `POST /api/leases`,
-  `POST /api/leases/{lease_id}/release`, `POST /api/run` and `GET /api/sessions/{session_id}`.
+  `POST /api/leases/{lease_id}/release`, `POST /api/run`, `GET /api/sessions/{session_id}`,
+  and `GET /api/smartqa/report`. `POST /api/stop` is needed for best-effort cancellation.
 - **APK upload.** `POST /api/smartqa/apks` (raw body, optional `X-Content-SHA256`) stores the
   file as `<sha256>.apk` under `ARTEMIS_SMARTQA_APK_DIR` (default `<test data>/smartqa_apks`).
   Cap: `ARTEMIS_SMARTQA_APK_MAX_BYTES` (default 200 MiB). The endpoint is 404 unless
@@ -138,5 +140,10 @@ releases the lease. Exit 0 = every theme completed, 1 = a run failed or the chec
   Each theme has its own run trace with `smartqa/session.json` and relative Before/After PNGs.
   `load_session()` reads the steps, text bounds, package-specific crash/ANR markers and
   `themes[theme].installed_apk_sha256`. The installed APK is hashed before and after the route;
-  the worker publishes no evidence for a mismatched or unverifiable APK. A report link and
-  APK-bound green verdict are separate work (CHE-8997).
+  the worker publishes no evidence for a mismatched or unverifiable APK.
+- **Verdict (CHE-8997).** The CLI asks the report endpoint to evaluate the worker evidence
+  for the requested themes and output `apk_sha256`. `report_url` points to the private JSON
+  report for that APK and those runs. It requires authentication and access to all runs;
+  the link alone grants no access. A verified red report still has a link. If the report is
+  missing, invalid, or for another APK, `green` is false, `report_url` is null, and
+  `report_error` gives the reason.

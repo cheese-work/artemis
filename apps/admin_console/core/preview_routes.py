@@ -131,6 +131,7 @@ DISABLED = frozenset(
         "GET /api/sessions/{session_id}/steps/{step_number}/replay_traces",
         # SmartQA check stores an uploaded APK on the host disk.
         "POST /api/smartqa/apks",
+        "GET /api/smartqa/report",
         # Run library writes wait for the L3 fixture store and its ownership tests.
         "POST /api/cleanup",
         "POST /api/runs/{session_id}/pin",
