@@ -397,6 +397,117 @@ def test_recording_sync_unmatchable_ack_keeps_connection_open(admin, recording_s
     assert recording_store.reconcile(host_id, host_registry.clock()) == [row]
 
 
+def test_recorder_ready_uses_signed_hello_clock_offset(admin, clock, recording_store, caplog):
+    caplog.set_level("INFO", logger=agent_router.__name__)
+    key, host_id = _enrolled(admin)
+    row = recording_store.assign(host_id, "active", 1)
+    hello_timestamp = int(host_registry.clock()) - 5
+    start = hello_timestamp + 0.75
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, host_id, ts=hello_timestamp))
+        assert ws.receive_json()["type"] == "connected"
+        clock["now"] += 3
+        ready = {
+            "type": "recorder_ready",
+            "recording_id": row.recording_id,
+            "revision": row.revision,
+            "started_at": start,
+        }
+        ws.send_json(ready)
+        ws.send_json({**ready, "started_at": start + 1})
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "pong"}
+
+    (persisted,) = recording_store.reconcile(host_id, host_registry.clock())
+    assert persisted.ready_at == host_registry.clock()
+    assert persisted.host_started_at == start
+    assert persisted.clock_offset == 5.0
+    assert [
+        event.removeprefix("session_id=- ")
+        for event in caplog.messages
+        if "event=recorder_ready" in event
+    ] == [
+        f"event=recorder_ready host_id={host_id} recording_id={row.recording_id} revision=1",
+        f"event=recorder_ready_ignored host_id={host_id} reason=not_matched",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("recording_id", None),
+        ("recording_id", "untrusted-log-canary" * 4),
+        ("revision", None),
+        ("revision", True),
+        ("revision", 1.0),
+        ("revision", 0),
+        ("started_at", None),
+        ("started_at", True),
+        ("started_at", "untrusted-log-canary"),
+        ("started_at", float("nan")),
+        ("started_at", float("inf")),
+        ("started_at", float("-inf")),
+        ("started_at", 10**400),
+    ],
+)
+def test_recorder_ready_ignores_invalid_fields(admin, recording_store, caplog, field, value):
+    caplog.set_level("INFO", logger=agent_router.__name__)
+    key, host_id = _enrolled(admin)
+    row = recording_store.assign(host_id, "active", 1)
+    message = {
+        "type": "recorder_ready",
+        "recording_id": row.recording_id,
+        "revision": 1,
+        "started_at": 100,
+        field: value,
+    }
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, host_id))
+        ws.receive_json()
+        ws.send_text(json.dumps(message))
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "pong"}
+
+    assert recording_store.reconcile(host_id, host_registry.clock()) == [row]
+    ignored = [
+        event.removeprefix("session_id=- ")
+        for event in caplog.messages
+        if "event=recorder_ready" in event
+    ]
+    assert ignored == [f"event=recorder_ready_ignored host_id={host_id} reason=invalid_{field}"]
+
+
+@pytest.mark.parametrize("fields", [{}, {"revision": 1 << 63}, {"recording_id": "\ud800"}])
+def test_recorder_ready_ignores_unmatched_assignments(admin, recording_store, caplog, fields):
+    caplog.set_level("INFO", logger=agent_router.__name__)
+    key, host_id = _enrolled(admin)
+    _, other_host = _enrolled(admin)
+    owner = host_id if fields else other_host
+    row = recording_store.assign(owner, "active", 1)
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, host_id))
+        ws.receive_json()
+        message = {
+            "type": "recorder_ready",
+            "host_id": owner,
+            "recording_id": row.recording_id,
+            "revision": 1,
+            "started_at": 100,
+            **fields,
+        }
+        ws.send_text(json.dumps(message))
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "pong"}
+
+    assert recording_store.reconcile(owner, host_registry.clock()) == [row]
+    ignored = [
+        event.removeprefix("session_id=- ")
+        for event in caplog.messages
+        if "event=recorder_ready" in event
+    ]
+    assert ignored == [f"event=recorder_ready_ignored host_id={host_id} reason=not_matched"]
+
+
 def test_recording_sync_snapshot_caps_rows_at_64_oldest(admin, clock, recording_store):
     key, host_id = _enrolled(admin)
     recording_ids = []

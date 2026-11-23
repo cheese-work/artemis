@@ -1,6 +1,8 @@
 """Tests for the durable host recording assignment store."""
 
+from contextlib import closing
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -141,3 +143,100 @@ def test_reconcile_is_host_scoped_for_records_and_stops(store: RecordingAssignme
         host_b_stopped.recording_id,
     }
     assert store.reconcile("host-c", 100.0) == []
+
+
+def test_ready_columns_migrate_existing_assignments(tmp_path: Path) -> None:
+    db_path = tmp_path / "hosts.db"
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            CREATE TABLE host_recording_assignments (
+                recording_id TEXT NOT NULL PRIMARY KEY,
+                host_id TEXT NOT NULL,
+                session_id TEXT NOT NULL UNIQUE,
+                run_generation INTEGER NOT NULL,
+                desired_state TEXT NOT NULL CHECK (desired_state IN ('record', 'stop')),
+                revision INTEGER NOT NULL CHECK (revision >= 1),
+                acked_revision INTEGER NOT NULL CHECK (acked_revision BETWEEN 0 AND revision),
+                deadline REAL NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO host_recording_assignments VALUES "
+            "('existing', 'host-a', 'run-a', 3, 'record', 1, 1, 2200, 100, 101)"
+        )
+
+    store = RecordingAssignmentStore(db_path, clock=lambda: 110.0)
+    (row,) = store.reconcile("host-a", 110.0)
+    assert (row.recording_id, row.run_generation, row.acked_revision) == ("existing", 3, 1)
+    assert (row.created_at, row.updated_at, row.deadline) == (100.0, 101.0, 2200.0)
+    assert (row.ready_at, row.host_started_at, row.clock_offset) == (None, None, None)
+
+    assert store.mark_ready("host-a", row.recording_id, 1, 105.25, 5.0)
+    reopened = RecordingAssignmentStore(db_path)
+    (ready,) = reopened.reconcile("host-a", 110.0)
+    assert (ready.ready_at, ready.host_started_at, ready.clock_offset) == (110.0, 105.25, 5.0)
+
+
+def test_mark_ready_requires_matching_active_assignment_and_only_sets_once(
+    store: RecordingAssignmentStore,
+) -> None:
+    active = store.assign("host-a", "run-a", 1)
+    stopped = store.assign("host-a", "run-b", 2)
+    assert store.request_stop(stopped.session_id)
+    store.clock = lambda: 110.0
+
+    assert not store.mark_ready("host-b", active.recording_id, 1, 105.0, 5.0)
+    assert not store.mark_ready("host-a", "unknown", 1, 105.0, 5.0)
+    assert not store.mark_ready("host-a", active.recording_id, 2, 105.0, 5.0)
+    assert not store.mark_ready("host-a", stopped.recording_id, 1, 105.0, 5.0)
+    assert not store.mark_ready("host-a", stopped.recording_id, 2, 105.0, 5.0)
+    rows = {row.session_id: row for row in store.reconcile("host-a", 110.0)}
+    assert rows[active.session_id] == active
+    assert rows[stopped.session_id].ready_at is None
+
+    assert store.mark_ready("host-a", active.recording_id, 1, 105.25, 5.0)
+    ready = store.assign("host-a", active.session_id, 1)
+    assert (ready.ready_at, ready.host_started_at, ready.clock_offset) == (110.0, 105.25, 5.0)
+    assert ready.acked_revision == 0
+    store.clock = lambda: 120.0
+    assert not store.mark_ready("host-a", active.recording_id, 1, 121.0, -1.0)
+    assert store.assign("host-a", active.session_id, 1) == ready
+
+
+@pytest.mark.parametrize("signal", ["ready", "timeout", "stop", "missing"])
+def test_wait_ready_polls_shared_db_without_real_sleep(tmp_path: Path, signal: str) -> None:
+    db_path = tmp_path / "hosts.db"
+    elapsed = 0.0
+    sleeps = []
+    writer = RecordingAssignmentStore(db_path, clock=lambda: 100.0 + elapsed)
+    assignment = writer.assign("host-a", "run-a", 1) if signal != "missing" else None
+
+    def sleep(seconds: float) -> None:
+        nonlocal elapsed
+        sleeps.append(seconds)
+        elapsed = round(elapsed + seconds, 8)
+        if elapsed == 0.4 and assignment is not None:
+            if signal == "ready":
+                assert writer.mark_ready("host-a", assignment.recording_id, 1, 95.0, 5.0)
+            elif signal == "stop":
+                assert writer.request_stop(assignment.session_id)
+
+    reader = RecordingAssignmentStore(db_path, monotonic=lambda: elapsed, sleep=sleep)
+    ready = reader.wait_ready("run-a")
+
+    assert elapsed == {"ready": 0.4, "timeout": 10.0, "stop": 0.4, "missing": 0.0}[signal]
+    assert sleeps == pytest.approx(
+        [0.2] * {"ready": 2, "timeout": 50, "stop": 2, "missing": 0}[signal]
+    )
+    if signal == "ready":
+        assert ready == writer.assign("host-a", "run-a", 1)
+        assert ready is not None and ready.ready_at == 100.4
+        assert writer.request_stop("run-a")
+        assert reader.wait_ready("run-a") is None
+        assert sleeps == [0.2, 0.2]
+    else:
+        assert ready is None
