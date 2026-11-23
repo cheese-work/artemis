@@ -27,10 +27,12 @@ def test_a_slow_import_stretches_the_deadline_with_the_measured_time():
 
 def test_a_stalled_probe_fails_within_the_probe_limit_and_leaves_no_child(tmp_path):
     pid_file = tmp_path / "probe.pid"
-    stall = f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(5)"
+    # The timeout must outlast interpreter start-up on a loaded runner, or the child is killed before it
+    # writes its pid; the child sleeps far longer than the timeout, so only the kill can end it.
+    stall = f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)"
     with (
         patch.object(module, "APP_IMPORT", stall),
-        patch.object(module, "PROBE_TIMEOUT", 0.5, create=True),
+        patch.object(module, "PROBE_TIMEOUT", 5.0, create=True),
         pytest.raises(subprocess.TimeoutExpired),
     ):
         module.startup_budget(6.0)
