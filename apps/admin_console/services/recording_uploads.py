@@ -9,11 +9,14 @@ from pathlib import Path
 import re
 from threading import Lock
 import time
+from typing import Any
 from uuid import uuid4
 
+from apps.admin_console.services import run_storage
 from apps.admin_console.services.config_store import _atomic_write, _fsync_directory
 
 MAX_CHUNK_BYTES = 8 * 1024 * 1024
+_MAX_UPLOADS_PER_HOST = 2
 _UPLOAD_ID = re.compile(r"[0-9a-f]{32}")
 _UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -28,6 +31,14 @@ class UploadConflict(Exception):
 
 
 class UploadNotFound(Exception):
+    pass
+
+
+class InsufficientStorage(Exception):
+    pass
+
+
+class TooManyUploads(Exception):
     pass
 
 
@@ -68,10 +79,14 @@ class RecordingUploadStore:
         staging_root: Path,
         max_declared_bytes: int = 1024**3,
         clock: Callable[[], float] = time.time,
+        disk_usage: Callable[[Path], Any] | None = None,
+        abandoned_after_seconds: float = 24 * 3600,
     ) -> None:
         self.clock = clock
         self._root = staging_root
         self._max_declared_bytes = max_declared_bytes
+        self._disk_usage = disk_usage
+        self._abandoned_after_seconds = abandoned_after_seconds
         self._lock = Lock()
         self._directory_sync_pending = False
         self._root.mkdir(mode=0o700, exist_ok=True)
@@ -95,15 +110,29 @@ class RecordingUploadStore:
 
         with self._lock:
             self._sync_pending_directory()
-            for upload in self._uploads():
+            now = self.clock()
+            live_uploads, _ = self._sweep_abandoned(now)
+            for upload in live_uploads:
                 if (upload.host_id, upload.recording_id) != (host_id, recording_id):
                     continue
                 if (upload.declared_length, upload.sha256) != (declared_length, sha256):
                     raise UploadConflict
                 return upload.upload_id, upload.offset
 
+            if sum(upload.host_id == host_id for upload in live_uploads) >= _MAX_UPLOADS_PER_HOST:
+                raise TooManyUploads
+
+            outstanding_bytes = declared_length + sum(
+                upload.declared_length - upload.offset for upload in live_uploads
+            )
+            required_bytes = outstanding_bytes + (outstanding_bytes + 4) // 5
+            disk_usage = (
+                self._disk_usage if self._disk_usage is not None else run_storage.disk_usage
+            )
+            if disk_usage(self._root).free < required_bytes:
+                raise InsufficientStorage
+
             upload_id = uuid4().hex
-            now = self.clock()
             upload = _Upload(
                 upload_id, host_id, session_id, recording_id, declared_length, sha256, 0, now, now
             )
@@ -115,6 +144,13 @@ class RecordingUploadStore:
                 os.close(descriptor)
             self._write_metadata(upload)
             return upload_id, 0
+
+    def sweep_abandoned(self) -> list[str]:
+        """Remove expired staging files and return their upload IDs."""
+        with self._lock:
+            self._sync_pending_directory()
+            _, deleted_ids = self._sweep_abandoned(self.clock())
+            return deleted_ids
 
     def offset(self, host_id: str, upload_id: str) -> int:
         with self._lock:
@@ -156,11 +192,25 @@ class RecordingUploadStore:
     def abort(self, host_id: str, upload_id: str) -> None:
         with self._lock:
             self._owned_upload(host_id, upload_id)
-            (self._root / f"{upload_id}.json").unlink()
-            self._directory_sync_pending = True
-            self._sync_pending_directory()
-            (self._root / f"{upload_id}.part").unlink()
-            _fsync_directory(self._root)
+            self._delete_upload(upload_id)
+
+    def _sweep_abandoned(self, now: float) -> tuple[list[_Upload], list[str]]:
+        live_uploads: list[_Upload] = []
+        deleted_ids: list[str] = []
+        for upload in self._uploads():
+            if now - upload.updated_at >= self._abandoned_after_seconds:
+                self._delete_upload(upload.upload_id)
+                deleted_ids.append(upload.upload_id)
+            else:
+                live_uploads.append(upload)
+        return live_uploads, deleted_ids
+
+    def _delete_upload(self, upload_id: str) -> None:
+        (self._root / f"{upload_id}.json").unlink()
+        self._directory_sync_pending = True
+        self._sync_pending_directory()
+        (self._root / f"{upload_id}.part").unlink()
+        _fsync_directory(self._root)
 
     def _owned_upload(self, host_id: str, upload_id: str) -> _Upload:
         if not isinstance(upload_id, str) or not _UPLOAD_ID.fullmatch(upload_id):
