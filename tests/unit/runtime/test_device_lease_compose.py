@@ -39,11 +39,16 @@ class NoFence:
         return True
 
 
-def registry():
+def registry(*, relay_alias=None):
     return DeviceRegistry(
         [
             Device("rig-1", ("usb-rig-1",), restricted=False, identity_confirmed=True),
-            Device("rig-2", ("webusb:" + "b" * 64,), restricted=False, identity_confirmed=True),
+            Device(
+                "rig-2",
+                (relay_alias,) if relay_alias else (),
+                restricted=False,
+                identity_confirmed=True,
+            ),
             Device("spare-1", pool="spare"),
         ]
     )
@@ -104,11 +109,12 @@ class ComposeTests(unittest.TestCase):
     def config_file(self, config=None):
         return self.write_json("composition.json", self.config if config is None else config)
 
-    def composed_broker(self):
+    def composed_broker(self, *, relay_alias=None):
+        device_registry = registry(relay_alias=relay_alias)
         composed = compose.compose(
-            self.config_file(), registry(), db_path=self.root / "leases.sqlite3"
+            self.config_file(), device_registry, db_path=self.root / "leases.sqlite3"
         )
-        broker = Broker(self.root / "leases.sqlite3", registry(), **composed["broker"])
+        broker = Broker(self.root / "leases.sqlite3", device_registry, **composed["broker"])
         broker.inventory()
         composed["ledger"].census(
             generation=1,
@@ -260,11 +266,10 @@ class ComposeTests(unittest.TestCase):
         self.assertFalse(broker.inventory()["admission_available"])
 
     def test_webusb_lock_blocks_canonical_broker_claim(self):
-        broker, composed = self.composed_broker()
+        alias = "webusb:" + "b" * 64
+        broker, composed = self.composed_broker(relay_alias=alias)
         lock = self.root / "locks" / "artemis-device-relay.lock"
-        lock.write_text(
-            json.dumps({"device_id": "127.0.0.1:44903", "webusb_claim_alias": "webusb:" + "b" * 64})
-        )
+        lock.write_text(json.dumps({"device_id": "127.0.0.1:44903", "webusb_claim_alias": alias}))
         rows = {device["device_id"]: device for device in broker.inventory()["devices"]}
         self.assertTrue(rows["rig-2"]["claimed"])
         self.assertFalse(rows["rig-1"]["claimed"])

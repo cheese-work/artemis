@@ -34,6 +34,7 @@ from artemis.runtime.process_probe import pid_is_alive
 
 
 LEASE_HANDOFF_ENV = "ARTEMIS_DEVICE_LEASE_HANDOFF"
+MANAGED_AVD_ADMISSION_TIMEOUT_SECONDS = 2.0
 
 
 class DeviceBusyError(RuntimeError):
@@ -130,6 +131,8 @@ class DeviceExecutionLock:
         webusb_claim_alias: str | None = None,
     ):
         self.device_id = device_id or "default"
+        if webusb_claim_alias is None and ingress == "frontend" and session_id:
+            webusb_claim_alias = os.getenv(self.WEBUSB_CLAIM_ALIAS_ENV)
         self._webusb_claim_alias = webusb_claim_alias
         self.lock_scope = lock_scope or os.getenv(self.LOCK_SCOPE_ENV) or None
         self.clean_device_id = self._normalize_lock_id(self.device_id, self.lock_scope)
@@ -566,8 +569,8 @@ class DeviceExecutionLock:
 
     @classmethod
     @contextmanager
-    def _admission_guard(cls) -> Iterator[bool]:
-        """Try to hold the broker's claim guard and report whether it was acquired.
+    def _admission_guard(cls, *, timeout: float | None = None) -> Iterator[bool]:
+        """Try once for the broker's claim guard, or wait up to an explicit timeout.
 
         The DLP-1 broker reads Artemis owner records inside the same exclusion,
         so it never sees a half-written record or races a new claim into a grant.
@@ -580,22 +583,32 @@ class DeviceExecutionLock:
 
         fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                yield False
-            else:
-                yield True
+            deadline = None if timeout is None else time.monotonic() + timeout
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    if deadline is None:
+                        yield False
+                        return
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise DeviceBusyError(
+                            f"Timed out waiting for device broker admission after {timeout:.1f}s."
+                        ) from exc
+                    time.sleep(min(remaining, cls._DEFAULT_POLL_INTERVAL_SECONDS))
+            yield True
         finally:
             os.close(fd)
 
-    def _try_acquire_owner_lock(self) -> bool | None:
+    def _try_acquire_owner_lock(self, *, handoff_guard_timeout: float | None = None) -> bool | None:
         """Return True if acquired, False if occupied, or None if admission is unavailable."""
         handoff = self._handoff if self._handoff is not None else os.getenv(LEASE_HANDOFF_ENV)
         if handoff is not None:
             if self._webusb_claim_alias is not None:
                 return None
-            return self._try_broker_owner_lock(handoff)
+            return self._try_broker_owner_lock(handoff, guard_timeout=handoff_guard_timeout)
         with self._admission_guard() as admitted:
             if not admitted:
                 return None
@@ -630,7 +643,9 @@ class DeviceExecutionLock:
                     return None
             return self._try_acquire_owner_lock_unguarded()
 
-    def _try_broker_owner_lock(self, handoff: str) -> bool | None:
+    def _try_broker_owner_lock(
+        self, handoff: str, *, guard_timeout: float | None = None
+    ) -> bool | None:
         from device_lease.claims import check_sdk_handoff
         from device_lease.transport import rpc
 
@@ -668,7 +683,7 @@ class DeviceExecutionLock:
             response = rpc(socket_path, {"op": "execution-lock", "args": request})
             if response != {"acquired": True}:
                 return False if response == {"code": "execution_lock_busy"} else None
-            with self._admission_guard() as admitted:
+            with self._admission_guard(timeout=guard_timeout) as admitted:
                 if not admitted:
                     return None
                 check_sdk_handoff(
@@ -690,7 +705,10 @@ class DeviceExecutionLock:
         return (
             self._acquired
             and self._handoff is not None
-            and self._try_broker_owner_lock(self._handoff) is True
+            and self._try_broker_owner_lock(
+                self._handoff, guard_timeout=MANAGED_AVD_ADMISSION_TIMEOUT_SECONDS
+            )
+            is True
         )
 
     def _try_acquire_owner_lock_unguarded(self) -> bool:
@@ -770,7 +788,7 @@ class DeviceExecutionLock:
         poll_interval: float = _DEFAULT_POLL_INTERVAL_SECONDS,
         cancel_event=None,
     ) -> None:
-        """Wait in FIFO order; optionally cap consecutive broker admission failures separately."""
+        """Wait in FIFO order; a nonblocking handoff may still wait for broker readback."""
         self._queue_path = self._claim_or_create_queue_ticket()
         started_at = time.monotonic()
         admission_started_at = None
@@ -845,7 +863,12 @@ class DeviceExecutionLock:
                     is_eligible = bool(device_queue and device_queue[0] == self._queue_path)
 
                 attempt_started_at = time.monotonic()
-                acquired = self._try_acquire_owner_lock() if is_eligible else False
+                if not is_eligible:
+                    acquired = False
+                elif not blocking and admission_timeout is not None:
+                    acquired = self._try_acquire_owner_lock(handoff_guard_timeout=admission_timeout)
+                else:
+                    acquired = self._try_acquire_owner_lock()
                 if acquired is True:
                     self._safe_unlink(self._queue_path)
                     self._queue_path = None
