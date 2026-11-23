@@ -128,7 +128,12 @@ async def execute_task(
             raise RuntimeError("session_device_unavailable: the session has no pinned phone")
         store = ChatStore(DB_PATH)
         root = store.get(chat_identity)["session_id"]
-        lease = DeviceExecutionLock(serial, session_id=root, ingress="frontend")
+        lease = DeviceExecutionLock(
+            serial,
+            session_id=root,
+            ingress="frontend",
+            webusb_claim_alias=os.getenv(DeviceExecutionLock.WEBUSB_CLAIM_ALIAS_ENV),
+        )
         config_snapshot = store.launch_config(root) or {}
 
         async def execute_turn(turn):

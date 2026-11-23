@@ -497,6 +497,57 @@ def test_held_admission_guard_respects_acquire_timeout(tmp_path, monkeypatch):
     assert not list(lock.queue_dir.glob("*.wait"))
 
 
+def test_guarded_webusb_lock_uses_enrolled_identity_across_ports(tmp_path, monkeypatch):
+    import sqlite3
+
+    guard = tmp_path / "claims.guard"
+    database = tmp_path / "leases.sqlite3"
+    alias = "webusb:" + "a" * 64
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            "CREATE TABLE android_claim_source (singleton, generation, complete, observed_at, "
+            "max_age, aliases, guard_path, lock_dir);"
+            "CREATE TABLE broker_devices (device_id, lease_id);"
+            "CREATE TABLE broker_groups (lease_id, state);"
+            "CREATE TABLE broker_tickets (state, reserved);"
+            "CREATE TABLE android_claims (device_id);"
+        )
+        connection.execute(
+            "INSERT INTO android_claim_source VALUES (1, 1, 1, unixepoch(), 60, ?, ?, ?)",
+            (
+                json.dumps({alias: "relay-phone", "relay-phone": "relay-phone"}),
+                str(guard),
+                str(tmp_path),
+            ),
+        )
+    monkeypatch.setenv("ARTEMIS_DEVICE_ADMISSION_GUARD", str(guard))
+    monkeypatch.setenv("ARTEMIS_DEVICE_CLAIMS_DB", str(database))
+
+    first = DeviceExecutionLock("127.0.0.1:44903", webusb_claim_alias=alias)
+    second = DeviceExecutionLock("127.0.0.1:44904", webusb_claim_alias=alias)
+    unknown = DeviceExecutionLock("127.0.0.1:44905", webusb_claim_alias="webusb:" + "b" * 64)
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO android_claims VALUES ('relay-phone')")
+    assert first._try_acquire_owner_lock() is False
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM android_claims")
+    try:
+        assert first._try_acquire_owner_lock() is True
+        assert DeviceExecutionLock.annotate_active_owner(session_id="relay-run")
+        assert json.loads(first.path.read_text())["device_id"] == "127.0.0.1:44903"
+        assert second._try_acquire_owner_lock() is False
+        with pytest.raises(DeviceBusyError, match="not registered with the device broker"):
+            unknown._try_acquire_owner_lock()
+    finally:
+        first.release()
+
+    try:
+        assert second._try_acquire_owner_lock() is True
+    finally:
+        second.release()
+
+
 def test_handoff_readback_guard_respects_acquire_timeout(tmp_path, monkeypatch):
     import fcntl
     from concurrent.futures import ThreadPoolExecutor

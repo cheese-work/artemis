@@ -796,6 +796,7 @@ class TaskQueueService:
 
         test_name = f"web_{int(time.time())}_{run_key[:8]}"
         env = dict(base_environment) if base_environment is not None else os.environ.copy()
+        env.pop(DeviceExecutionLock.WEBUSB_CLAIM_ALIAS_ENV, None)
         env["PYTHON_DOTENV_DISABLED"] = "1"
         pythonpath_parts = [
             str(WORKSPACE_ROOT),
@@ -1454,6 +1455,29 @@ class TaskQueueService:
                 )
             )
             target = cls._task_target(task_item, resolve_host=True)
+            bridge_session_id = (task_item.get("device_binding") or {}).get("bridge_session_id")
+            alias = None
+            if bridge_session_id and (
+                config_snapshot.environment.get(DeviceExecutionLock.ADMISSION_GUARD_ENV)
+                or config_snapshot.environment.get("ARTEMIS_DEVICE_CLAIMS_DB")
+            ):
+                from apps.admin_console.services.bridge_session_service import (
+                    bridge_session_service,
+                )
+
+                if (
+                    not target.endpoint.is_local_default
+                    or not target.serial
+                    or task_item.get("ingress", "frontend") != "frontend"
+                    or not sess_id
+                ):
+                    raise TaskEndpointUnavailable("Invalid browser relay target")
+                alias = await bridge_session_service.claim_alias(
+                    bridge_session_id, target.serial, task_item.get("requested_by")
+                )
+                if alias is None:
+                    raise TaskEndpointUnavailable("Cannot verify the bound browser phone identity")
+                target = cls._task_target(task_item, resolve_host=True)
             cmd, env = cls._build_worker_invocation(
                 task_item,
                 run_key,
@@ -1463,6 +1487,8 @@ class TaskQueueService:
                 target,
                 base_environment=config_snapshot.environment,
             )
+            if alias is not None:
+                env[DeviceExecutionLock.WEBUSB_CLAIM_ALIAS_ENV] = alias
 
             device_serial = task_item.get("device_serial")
             logger.info(

@@ -68,6 +68,17 @@ class DeviceIdentity:
             return None
         return self._mac(value)
 
+    def webusb_claim_alias(self, owner: str, serialno: str) -> str | None:
+        """Fingerprint one verified browser owner and hardware serial for broker enrollment."""
+        serial = serialno.strip()
+        if (
+            not owner
+            or serial.lower() in PLACEHOLDER_SERIALS
+            or not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", serial)
+        ):
+            return None
+        return "webusb:" + self._mac(f"webusb\0{owner}\0{serial}")
+
     def avd_hash(self, scope: str, avd: str) -> str:
         """The AVD is the device: one identity per (host or adb server, AVD name)."""
         return self._mac(f"avd\0{scope}\0{avd}")

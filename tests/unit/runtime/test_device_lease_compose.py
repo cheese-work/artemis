@@ -43,7 +43,7 @@ def registry():
     return DeviceRegistry(
         [
             Device("rig-1", ("usb-rig-1",), restricted=False, identity_confirmed=True),
-            Device("rig-2", restricted=False, identity_confirmed=True),
+            Device("rig-2", ("webusb:" + "b" * 64,), restricted=False, identity_confirmed=True),
             Device("spare-1", pool="spare"),
         ]
     )
@@ -258,6 +258,18 @@ class ComposeTests(unittest.TestCase):
         broker, _ = self.composed_broker()
         (self.root / "locks" / "artemis-device-rig-2.lock").write_text("{partial")
         self.assertFalse(broker.inventory()["admission_available"])
+
+    def test_webusb_lock_blocks_canonical_broker_claim(self):
+        broker, composed = self.composed_broker()
+        lock = self.root / "locks" / "artemis-device-relay.lock"
+        lock.write_text(
+            json.dumps({"device_id": "127.0.0.1:44903", "webusb_claim_alias": "webusb:" + "b" * 64})
+        )
+        rows = {device["device_id"]: device for device in broker.inventory()["devices"]}
+        self.assertTrue(rows["rig-2"]["claimed"])
+        self.assertFalse(rows["rig-1"]["claimed"])
+        with self.assertRaisesRegex(ValueError, "device owned by SDK"):
+            composed["ledger"].claim("rig-2", owner="android", run_id="run", reference="test")
 
     def test_guard_is_held_while_claim_sources_are_read(self):
         broker, _ = self.composed_broker()
