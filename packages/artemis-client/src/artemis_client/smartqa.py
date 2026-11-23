@@ -349,13 +349,13 @@ async def _check_theme(
     submitted = False
     fenced = True  # While True a task may still run; the lease then expires on its own.
     try:
+        run_options = _smartqa_options(options, manifest, theme, route)
+        run_options["smartqa"].update(lease_id=lease["lease_id"], apk_sha256=stored["sha256"])
         handle = await client.submit(
             _goal(options, manifest, route),
             profile="pro",
-            device_serial=lease.get("device_id"),
             locked_app_package=manifest.package,
-            app_path=stored.get("path"),
-            options=_smartqa_options(options, manifest, theme, route),
+            options=run_options,
             task_id=task_id,
         )
         submitted = True

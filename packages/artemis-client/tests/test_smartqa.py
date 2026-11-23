@@ -192,8 +192,10 @@ class RunCheckTests(SmartQATestCase):
         self.assertEqual(smartqa["persona"], "first-time-user")
         self.assertEqual(smartqa["mode"], "persona")
         self.assertEqual(run_body["locked_app_package"], "com.example.sample")
-        self.assertEqual(run_body["app_path"], "/srv/a.apk")
-        self.assertEqual(run_body["device_serial"], "emulator-0")
+        self.assertNotIn("device_serial", run_body)
+        self.assertNotIn("app_path", run_body)
+        self.assertEqual(smartqa["lease_id"], "lease-0")
+        self.assertEqual(smartqa["apk_sha256"], result.apk_sha256)
         self.assertLessEqual(smartqa["max_model_calls"], 80)
 
     async def test_route_mode_sends_steps_and_skips_the_persona(self) -> None:
