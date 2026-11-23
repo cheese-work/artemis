@@ -198,6 +198,7 @@ def test_snapshot_and_device_modules_keep_separate_revisions_in_one_database(tmp
     assert revisions == {
         devices.MODULE: len(devices.REVISIONS),
         run_snapshot.MODULE: len(run_snapshot.REVISIONS),
+        run_catalog.FTS_MODULE: len(run_catalog.FTS_REVISIONS),
         prompt_critique_repository.MODULE: len(prompt_critique_repository.REVISIONS),
         "run_connections": len(run_connections.REVISIONS),
     }
