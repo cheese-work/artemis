@@ -8,6 +8,7 @@ import uuid
 
 import pytest
 
+from apps.admin_console.database.repositories import device_repository
 from apps.admin_console.database.repositories.device_repository import (
     ConnectionKeyTaken,
     DeviceRepository,
@@ -130,16 +131,50 @@ def test_create_get_and_list_devices(db, repo):
     assert repo.get("dev_missing") is None
 
 
-def test_ids_are_opaque_and_never_derived_from_a_serial(repo):
-    device = repo.create_device(owner_principal_id=None, label="emulator-5554")
-    connection_id = repo.upsert_connection(
-        device.device_id, kind="avd", source="local", host_id=None, serial="emulator-5554"
-    )
+# Fixed ids: ``U1`` deliberately contains "5554" so the old chance-based assertion fails on it.
+_U1 = uuid.UUID("00005554-0000-4000-8000-000000000001")
+_U2 = uuid.UUID("00000000-0000-4000-8000-000000000002")
+_U3 = uuid.UUID("00000000-0000-4000-8000-000000000003")
+_U4 = uuid.UUID("00000000-0000-4000-8000-000000000004")
 
-    assert device.device_id.startswith("dev_") and connection_id.startswith("con_")
-    assert "5554" not in device.device_id and "5554" not in connection_id
-    other = repo.create_device(owner_principal_id=None, label="emulator-5554")
-    assert other.device_id != device.device_id
+
+def _fixed_uuids(monkeypatch, values):
+    sequence = iter(values)
+    monkeypatch.setattr(device_repository.uuid, "uuid4", lambda: next(sequence))
+
+
+def _store(tmp_path, name):
+    path = tmp_path / f"{name}.db"
+    StorageManager(path, tmp_path)
+    return DeviceRepository(path)
+
+
+def _create_with_serial(repo, serial):
+    device = repo.create_device(owner_principal_id=None, label=serial)
+    connection_id = repo.upsert_connection(
+        device.device_id, kind="avd", source="local", host_id=None, serial=serial
+    )
+    return device.device_id, connection_id
+
+
+def test_ids_are_opaque_and_never_derived_from_a_serial(tmp_path, monkeypatch):
+    # The serial never reaches the id: two fresh stores that see the same random
+    # values and different serials produce identical ids, even when a value contains "5554".
+    _fixed_uuids(monkeypatch, [_U1, _U2])
+    from_5554 = _create_with_serial(_store(tmp_path, "a"), "emulator-5554")
+    assert from_5554 == (f"dev_{_U1.hex}", f"con_{_U2.hex}")
+
+    _fixed_uuids(monkeypatch, [_U1, _U2])
+    assert _create_with_serial(_store(tmp_path, "b"), "emulator-9999") == from_5554
+
+
+def test_ids_are_unique_per_create(tmp_path, monkeypatch):
+    _fixed_uuids(monkeypatch, [_U3, _U4])
+    store = _store(tmp_path, "c")
+    first = store.create_device(owner_principal_id=None, label="emulator-5554")
+    second = store.create_device(owner_principal_id=None, label="emulator-5554")
+    assert [first.device_id, second.device_id] == [f"dev_{_U3.hex}", f"dev_{_U4.hex}"]
+    assert first.device_id != second.device_id
 
 
 def test_alias_resolves_to_the_canonical_device(repo):
