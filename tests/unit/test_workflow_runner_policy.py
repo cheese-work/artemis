@@ -33,6 +33,10 @@ def _jobs():
         if "merge_group" in _triggers(workflow):
             continue
         for name, job in workflow["jobs"].items():
+            # CHE-3440: a job that only calls the shared reusable workflow in multica-dotfiles has no
+            # runner of its own; that workflow picks the runner (checked in multica-dotfiles tests).
+            if "uses" in job:
+                continue
             if (path.name, name) not in INACTIVE:
                 yield path.name, name, workflow, job
 
@@ -49,18 +53,19 @@ def _merge_group_jobs():
 def test_merge_group_jobs_never_select_the_self_hosted_pool():
     """GitHub runs a merge_group workflow from the queue commit, which a queued PR can rewrite.
 
-    No owner-name condition authenticates those workflow bytes, so a job they start may only use
-    a GitHub-hosted ephemeral runner, never a self-hosted label (the X99 pool).
+    No owner-name condition authenticates those workflow bytes, so a job they start may carry no
+    runner label at all. The only job is a thin call of the shared reusable queue workflow, whose
+    runner is the GitHub-hosted `ubuntu-latest` (pinned in the multica-dotfiles tests).
     """
     jobs = list(_merge_group_jobs())
     assert [(file, name) for file, name, _w, _j in jobs] == [("pr-ready-queue.yml", "pr-ready")]
     for file, name, workflow, job in jobs:
-        assert job["runs-on"] == "ubuntu-latest", (file, name, job["runs-on"])
+        assert "runs-on" not in job, (file, name)
         assert "self-hosted" not in json.dumps([workflow, job]), (file, name)
         assert "cheese-x99" not in json.dumps([workflow, job]), (file, name)
 
 
-def test_the_queue_job_keeps_a_read_only_token_no_secret_and_the_default_branch_script():
+def test_the_queue_job_is_a_thin_call_with_a_read_only_token_and_no_secret():
     workflow = yaml.safe_load((WORKFLOWS / "pr-ready-queue.yml").read_text(encoding="utf-8"))
     assert _triggers(workflow) == {"merge_group": {"types": ["checks_requested"]}}
     assert workflow["permissions"] == {
@@ -68,13 +73,11 @@ def test_the_queue_job_keeps_a_read_only_token_no_secret_and_the_default_branch_
         "pull-requests": "read",
         "issues": "read",
     }
-    job = workflow["jobs"]["pr-ready"]
     assert "secrets." not in json.dumps(workflow)
-    checkout = job["steps"][0]
-    assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout["uses"])
-    assert checkout["with"] == {
-        "ref": "${{ github.event.repository.default_branch }}",
-        "persist-credentials": False,
+    assert workflow["jobs"] == {
+        "pr-ready": {
+            "uses": "cheese-work/multica-dotfiles/.github/workflows/pr-ready-reusable-queue.yml@main"
+        }
     }
 
 
