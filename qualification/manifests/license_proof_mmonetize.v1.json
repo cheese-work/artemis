@@ -23,12 +23,7 @@
     "package": "io.mmonetize.sample",
     "proof_variant": "adsTestLicenseProof",
     "proof_variant_debuggable": false,
-    "license_proof_port": 8080,
-    "apk_sha256": "87688b2232242fd9ab0efa5ae7b23ceb2e024ae409cf80c19644c60e41924039",
-    "signer_certificate_sha256": "5d2891b7657e01b8b3a0eb0a6315a651385454e4a834d4bd1f58ed4e41aedae1",
-    "artifact_available": true,
-    "artifact_location": "https://github.com/tevo-studio/mMonetize/actions/runs/42334402737 (artifact 13559715890, expires 2026-11-14 10:45 ICT; hashes from the CHE-4388 receipt; download unverified by the author's token)",
-    "build_command": "LICENSE_PROOF_PORT=8080 bash sample/.github/scripts/build-license-proof.sh <mMonetize-SDK-checkout>"
+    "license_proof_port": 8080
   },
   "service": {
     "profile": "license-test",
@@ -87,10 +82,10 @@
     "reason": "The pinned sample exposes the license result and logs initialization exceptions, but it has no success observable that proves initialization proceeded or was denied."
   },
   "debug_case_input": {
-    "required": "A debuggable APK that routes to the X99 license-test endpoint",
+    "required": "A debuggable variant that routes to the X99 license-test endpoint",
     "available_in_pinned_sources": false,
-    "reason": "The pinned licenseProof build is non-debuggable; the ordinary debug build does not configure the emulator HTTP endpoint.",
-    "disposition": "NOT-RUN until a compatible APK is pinned"
+    "reason": "The pinned licenseProof variant is non-debuggable; the ordinary debug variant does not configure the emulator HTTP endpoint.",
+    "disposition": "NOT-RUN in CHE-3101; device follow-up is CHE-9713"
   },
   "fixture_reset": {
     "before_each_case": "adb shell pm clear io.mmonetize.sample",
@@ -105,7 +100,7 @@
     "server_row",
     "server_last_seen_before_after",
     "testcase_revision",
-    "apk_sha256",
+    "app_package",
     "device_serial",
     "command_exit_status",
     "fixture_cleanup_readback"

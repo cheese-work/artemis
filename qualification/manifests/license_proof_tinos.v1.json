@@ -20,12 +20,7 @@
     "package": "digital.tinos.sample.kotlin",
     "proof_variant": "licenseProof",
     "proof_variant_debuggable": false,
-    "license_proof_port": 8080,
-    "apk_sha256": "739a0711e14a828546372e15a1f4fd4b7c5db2bd1a0c106429781e495933e6c1",
-    "signer_certificate_sha256": "75c03eae7a89f96434fc3a8b580525a595be1fc41cb5ebda4dcd269710934aaf",
-    "artifact_available": true,
-    "artifact_location": "CHE-4387 attachments CHE-4387-tinos-licenseProof-ee151046.apk.part01..part10 (concatenate in order; size 6922004; receipt CHE-4387-artifact-receipt.json)",
-    "build_command": "Do not rebuild: a rebuild generates a new signing key. Original build: bash ./gradlew :sample-kotlin:assembleLicenseProof -PlicenseProofPort=8080 --no-daemon --console=plain --max-workers=2 at tinos-mobile ee151046c072e39f127b1e7b0c4c17edc9dce570"
+    "license_proof_port": 8080
   },
   "service": {
     "profile": "license-test",
@@ -84,10 +79,10 @@
     "reason": "The pinned sample publishes the typed license callback result, but it has no observable that proves runtime construction succeeded or was denied."
   },
   "debug_case_input": {
-    "required": "A debuggable APK that routes to the X99 license-test endpoint",
+    "required": "A debuggable variant that routes to the X99 license-test endpoint",
     "available_in_pinned_sources": false,
-    "reason": "The pinned licenseProof build is non-debuggable and defines the emulator HTTP endpoint only for that build type.",
-    "disposition": "NOT-RUN until a compatible APK is pinned"
+    "reason": "The pinned licenseProof variant is non-debuggable and defines the emulator HTTP endpoint only for that build type.",
+    "disposition": "NOT-RUN in CHE-3101; device follow-up is CHE-9713"
   },
   "fixture_reset": {
     "before_each_case": "adb shell pm clear digital.tinos.sample.kotlin",
@@ -102,7 +97,7 @@
     "server_row",
     "server_last_seen_before_after",
     "testcase_revision",
-    "apk_sha256",
+    "app_package",
     "device_serial",
     "command_exit_status",
     "fixture_cleanup_readback"
