@@ -10,7 +10,6 @@ SupplementaryGroups=artemis-preview-runner
 NetworkNamespacePath=/run/netns/artemis-preview-acquire
 ExecStart=/usr/sbin/squid -N -f /etc/artemis-preview/egress-squid.conf
 RuntimeDirectory=artemis-preview-egress
-LogsDirectory=squid
 UMask=0077
 Restart=on-failure
 NoNewPrivileges=true

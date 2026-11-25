@@ -77,7 +77,10 @@ rather than running `npm ci` without it.
   are the first steps of the install stage.
 - Squid's default pid file (`/run/squid.pid`) is outside the unit's runtime
   directory. If the host's Squid treats the failed write as fatal, add a
-  `pid_filename` line to the config in the install stage.
+  `pid_filename` line to the config in the install stage. The unit's only
+  writable path is its runtime directory (no `LogsDirectory`), so Squid's default
+  log files under `/var/log/squid` are not writable either; point `cache_log` and
+  `access_log` at the runtime directory or set `access_log none` in the same stage.
 - The proxy reads the pin through `SupplementaryGroups=artemis-preview-runner`,
   which also gives it read access to the shared runner directory.
 - The proxy account can reach any public address on 443 if the Squid ACLs fail;

@@ -381,7 +381,20 @@ def test_proxy_unit_is_a_locked_down_squid_with_the_checked_in_config():
     assert "ProtectHome=true" in lines
     assert "PrivateTmp=true" in lines
     assert "RuntimeDirectory=artemis-preview-egress" in lines
-    assert "ReadWritePaths=" not in unit  # only the runtime and log directories are writable
+    # the runtime directory is the only writable path
+    writable_keys = (
+        "ReadWritePaths=",
+        "ReadWriteDirectories=",
+        "LogsDirectory=",
+        "StateDirectory=",
+    )
+    writable_keys += (
+        "CacheDirectory=",
+        "ConfigurationDirectory=",
+        "BindPaths=",
+        "TemporaryFileSystem=",
+    )
+    assert not [line for line in lines if line.startswith(writable_keys)]
     assert "WantedBy=" not in unit  # file only: never enabled by itself
     exec_start = next(line for line in lines if line.startswith("ExecStart="))
     assert exec_start == "ExecStart=/usr/sbin/squid -N -f /etc/artemis-preview/egress-squid.conf"
