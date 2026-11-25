@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import sqlite3
 import time
 import uuid
@@ -56,6 +57,24 @@ def _canonical(aliases, alias):
     return aliases[alias]
 
 
+def sdk_lock_alias(device_id, webusb_claim_alias=None):
+    """Resolve the identity asserted by an SDK lock, without changing its ADB route."""
+    _text(device_id)
+    if webusb_claim_alias is None:
+        if device_id.startswith("webusb:"):
+            raise ValueError("WebUSB alias is not an ADB transport")
+        return device_id
+    _text(webusb_claim_alias)
+    transport = re.fullmatch(r"127\.0\.0\.1:([1-9][0-9]{0,4})", device_id)
+    if (
+        transport is None
+        or int(transport[1]) > 65535
+        or not re.fullmatch(r"webusb:[0-9a-f]{64}", webusb_claim_alias)
+    ):
+        raise ValueError("invalid WebUSB claim identity")
+    return webusb_claim_alias
+
+
 def _lifecycle(conn):
     if conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_claim_lifecycle'"
@@ -95,7 +114,8 @@ def check_lock_conflicts(device_id, aliases, lock_dir, *, own_path=None):
         if own_path is not None and path.resolve() == Path(own_path).resolve():
             continue  # Existing same-path owner validation remains the SDK's job.
         owner = json.loads(path.read_text())
-        if _canonical(aliases, owner["device_id"]) == device_id:
+        alias = sdk_lock_alias(owner["device_id"], owner.get("webusb_claim_alias"))
+        if _canonical(aliases, alias) == device_id:
             raise DeviceClaimOccupied("device owned by SDK")
 
 

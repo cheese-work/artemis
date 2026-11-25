@@ -18,6 +18,7 @@ Covers: relay forwarding, same-origin boundaries, and session cleanup.
 """
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -974,6 +975,52 @@ def test_bridge_close_logs_sanitized_reason(reason, caplog):
 
     assert "event=bridge_close" in caplog.text
     assert f"reason={reason}" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_claim_alias_is_stable_across_ports_and_bound_to_owner(monkeypatch):
+    from apps.admin_console.services.device_identity import device_identity
+
+    monkeypatch.setattr(
+        device_identity, "_mac", lambda value: hashlib.sha256(value.encode()).hexdigest()
+    )
+    adb = AsyncMock(return_value="PA1234")
+    monkeypatch.setattr(bridge_session_service_module, "_run_adb_command", adb)
+    service = BridgeSessionService()
+    first = BridgeSession("first", port=40000, owner="qa@example.com", expires_at=float("inf"))
+    second = BridgeSession("second", port=40001, owner=first.owner, expires_at=float("inf"))
+    for session in (first, second):
+        session.connected.set()
+        service._sessions[session.session_id] = session
+
+    assert await service.claim_alias(first.session_id, first.serial, "other@example.com") is None
+    assert await service.claim_alias(first.session_id, second.serial, first.owner) is None
+    adb.assert_not_awaited()
+
+    alias = await service.claim_alias(first.session_id, first.serial, first.owner)
+    assert alias is not None and alias.startswith("webusb:")
+    adb.assert_awaited_once_with("-s", first.serial, "shell", "getprop", "ro.serialno")
+    assert await service.claim_alias(second.session_id, second.serial, second.owner) == alias
+    assert device_identity.webusb_claim_alias("other@example.com", "PA1234") != alias
+    assert device_identity.webusb_claim_alias(first.owner, "unknown") is None
+
+
+@pytest.mark.asyncio
+async def test_claim_alias_discarded_when_bridge_resumes_during_probe(monkeypatch):
+    service = BridgeSessionService()
+    session = await service.create_session(owner="qa@example.com")
+    session.connected.set()
+
+    async def reconnect(*arguments):
+        assert await service.begin_reconnect(session.session_id, session.connection_generation)
+        await service.resume(session.session_id, session.reconnect_token, session.owner)
+        return "PA1234"
+
+    monkeypatch.setattr(bridge_session_service_module, "_run_adb_command", reconnect)
+    try:
+        assert await service.claim_alias(session.session_id, session.serial, session.owner) is None
+    finally:
+        await service.revoke(session.session_id)
 
 
 @pytest.mark.asyncio

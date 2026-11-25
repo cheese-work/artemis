@@ -32,9 +32,9 @@ from apps.admin_console.database.repositories.session_repository import (
 from apps.admin_console.routers.tasks import get_status
 from apps.admin_console.services.task_queue_service import TaskQueueService, task_queue_service
 from artemis.runtime import trace_store
+from artemis.runtime.adb_endpoint import AdbEndpoint, AdbTarget
 from artemis.runtime.lifecycle import finish_trace
-from artemis.runtime.device_lock import DeviceLockOwner
-from artemis.runtime.adb_endpoint import AdbEndpoint
+from artemis.runtime.device_lock import DeviceExecutionLock, DeviceLockOwner
 
 
 @pytest.fixture(autouse=True)
@@ -439,6 +439,59 @@ async def test_queue_worker_execution_lifecycle(mocked_session_repo):
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_bridge,verified", [(True, True), (True, False), (False, False)])
+async def test_guarded_worker_accepts_only_a_server_resolved_bridge_alias(has_bridge, verified):
+    from apps.admin_console.services.bridge_session_service import bridge_session_service
+
+    alias_key = DeviceExecutionLock.WEBUSB_CLAIM_ALIAS_ENV
+    alias = "webusb:" + "a" * 64
+    target = AdbTarget(AdbEndpoint.local(), "127.0.0.1:44903")
+    task = {
+        "session_id": "run",
+        "goal": "Read phone settings",
+        "device_serial": target.serial,
+        "requested_by": "qa@example.com",
+        "device_binding": {"bridge_session_id": "bridge"} if has_bridge else {},
+    }
+    snapshot = MagicMock()
+    snapshot.environment = {
+        DeviceExecutionLock.ADMISSION_GUARD_ENV: "test-guard",
+        "ARTEMIS_DEVICE_CLAIMS_DB": "test-db",
+        alias_key: "inherited-alias",
+    }
+    config_store = MagicMock(snapshot_for_spawn=AsyncMock(return_value=snapshot))
+    worker = MagicMock(pid=1234, returncode=0, wait=AsyncMock(return_value=0))
+    with (
+        patch.object(TaskQueueService, "_begin_task_run"),
+        patch.object(TaskQueueService, "_task_target", return_value=target),
+        patch.object(TaskQueueService, "_register_worker_run"),
+        patch.object(TaskQueueService, "_terminate_if_cancelled_during_launch"),
+        patch.object(TaskQueueService, "_persist_terminal_session_status"),
+        patch.object(TaskQueueService, "_recover_or_fail_recording"),
+        patch.object(TaskQueueService, "_deliver_outcome"),
+        patch(
+            "apps.admin_console.services.config_store.get_config_store", return_value=config_store
+        ),
+        patch.object(
+            bridge_session_service, "claim_alias", return_value=alias if verified else None
+        ) as probe,
+        patch("asyncio.create_subprocess_exec", return_value=worker) as spawn,
+    ):
+        await TaskQueueService._execute_task_item(task)
+
+    if has_bridge:
+        probe.assert_awaited_once_with("bridge", target.serial, task["requested_by"])
+    else:
+        probe.assert_not_awaited()
+    if has_bridge and not verified:
+        spawn.assert_not_awaited()
+    else:
+        spawn.assert_awaited_once()
+        assert spawn.call_args.kwargs["env"].get(alias_key) == (alias if verified else None)
+        assert spawn.call_args.kwargs["env"]["ADB_DEVICE_SERIAL"] == target.serial
 
 
 @pytest.mark.asyncio

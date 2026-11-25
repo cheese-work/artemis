@@ -59,6 +59,7 @@ class DeviceLockOwner:
     session_id: str | None = None
     ingress: str | None = None
     lock_scope: str | None = None
+    webusb_claim_alias: str | None = None
 
     @classmethod
     def from_dict(cls, value: dict) -> DeviceLockOwner:
@@ -72,6 +73,7 @@ class DeviceLockOwner:
             session_id=(str(value["session_id"]) if value.get("session_id") is not None else None),
             ingress=(str(value["ingress"]) if value.get("ingress") is not None else None),
             lock_scope=(str(value["lock_scope"]) if value.get("lock_scope") is not None else None),
+            webusb_claim_alias=value.get("webusb_claim_alias"),
         )
 
 
@@ -93,6 +95,7 @@ class DeviceExecutionLock:
     # CHE-5297: path of the DLP-1 broker's shared claim guard (flock), when composed.
     ADMISSION_GUARD_ENV = "ARTEMIS_DEVICE_ADMISSION_GUARD"
     LOCK_SCOPE_ENV = "ARTEMIS_ADB_ENDPOINT_ID"
+    WEBUSB_CLAIM_ALIAS_ENV = "ARTEMIS_WEBUSB_CLAIM_ALIAS"
 
     @staticmethod
     def _normalize_device_id(device_id: str | None) -> str:
@@ -125,8 +128,12 @@ class DeviceExecutionLock:
         session_id: str | None = None,
         ingress: str | None = None,
         lock_scope: str | None = None,
+        webusb_claim_alias: str | None = None,
     ):
         self.device_id = device_id or "default"
+        if webusb_claim_alias is None and ingress == "frontend" and session_id:
+            webusb_claim_alias = os.getenv(self.WEBUSB_CLAIM_ALIAS_ENV)
+        self._webusb_claim_alias = webusb_claim_alias
         self.lock_scope = lock_scope or os.getenv(self.LOCK_SCOPE_ENV) or None
         self.clean_device_id = self._normalize_lock_id(self.device_id, self.lock_scope)
         self.description = description
@@ -599,24 +606,31 @@ class DeviceExecutionLock:
         """Return True if acquired, False if occupied, or None if admission is unavailable."""
         handoff = self._handoff if self._handoff is not None else os.getenv(LEASE_HANDOFF_ENV)
         if handoff is not None:
+            if self._webusb_claim_alias is not None:
+                return None
             return self._try_broker_owner_lock(handoff, guard_timeout=handoff_guard_timeout)
         with self._admission_guard() as admitted:
             if not admitted:
                 return None
             guard = os.getenv(self.ADMISSION_GUARD_ENV)
             database = os.getenv("ARTEMIS_DEVICE_CLAIMS_DB")
-            if guard or database:
+            if guard or database or self._webusb_claim_alias is not None:
                 if not guard or not database:
                     return None
                 from device_lease.claims import (
                     DeviceClaimOccupied,
                     UnknownSdkClaimIdentity,
                     check_sdk_available,
+                    sdk_lock_alias,
                 )
 
                 try:
                     check_sdk_available(
-                        database, guard, self.device_id, self.path.parent, self.path
+                        database,
+                        guard,
+                        sdk_lock_alias(self.device_id, self._webusb_claim_alias),
+                        self.path.parent,
+                        self.path,
                     )
                 except UnknownSdkClaimIdentity as exc:
                     raise DeviceBusyError(
@@ -706,6 +720,8 @@ class DeviceExecutionLock:
             ingress=self.ingress,
             lock_scope=self.lock_scope,
         )
+        if self._webusb_claim_alias is not None:
+            owner_payload["webusb_claim_alias"] = self._webusb_claim_alias
         try:
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
@@ -1156,6 +1172,8 @@ class DeviceExecutionLock:
             "session_id": str(session_id),
             "ingress": ingress or owner.ingress or "sdk",
         }
+        if owner.webusb_claim_alias is not None:
+            payload["webusb_claim_alias"] = owner.webusb_claim_alias
         return cls._atomic_write_json(path, payload)
 
     @classmethod

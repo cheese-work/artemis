@@ -339,6 +339,39 @@ class BridgeSessionService:
         async with self._lock:
             return self._sessions.get(session_id)
 
+    async def claim_alias(self, session_id: str, serial: str, owner: str | None) -> str | None:
+        """Read the broker identity from the live, authenticated browser binding."""
+        from apps.admin_console.services.device_identity import device_identity
+
+        if not owner:
+            return None
+        session = await self.get(session_id)
+        if (
+            session is None
+            or session.serial != serial
+            or session.owner != owner
+            or session.revoked
+            or session.is_expired
+            or not session.connected.is_set()
+            or not session.websocket_attached
+        ):
+            return None
+        generation = session.connection_generation
+        try:
+            serialno = await _run_adb_command("-s", serial, "shell", "getprop", "ro.serialno")
+        except (OSError, RuntimeError):
+            return None
+        if (
+            self._sessions.get(session_id) is not session
+            or session.revoked
+            or session.is_expired
+            or not session.connected.is_set()
+            or not session.websocket_attached
+            or session.connection_generation != generation
+        ):
+            return None
+        return device_identity.webusb_claim_alias(owner, serialno)
+
     async def begin_reconnect(
         self,
         session_id: str,

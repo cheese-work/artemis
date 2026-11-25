@@ -995,6 +995,28 @@ the census registry refuses every SDK acquisition in that lock directory.
 Unknown ownership fails closed. Reconcile the owner and registry before enabling
 admission; deleting an unknown lock is not a census.
 
+#### Browser WebUSB enrollment
+
+For a guarded SmartQA browser run, the queue verifies the live bridge belongs to
+the run's authenticated principal and probes `ro.serialno` through that bridge.
+The worker keeps the loopback port as its ADB route. For admission, it uses a
+separate `webusb:<digest>` alias derived by `DeviceIdentity.webusb_claim_alias`
+from the principal and serial with the instance's device pepper. The alias is not
+hardware attestation: enroll only a trusted principal and a known phone whose
+serial was independently verified. Never log or publish the pepper or raw serial.
+
+The operator derives the alias in the target instance and adds it to the private
+broker registry for that phone, then follows the normal complete census procedure.
+If a phone has multiple routes or enrolled principals, all aliases must map to
+the same canonical device entry. Do not add ephemeral loopback ports to the
+registry or turn a relay-only entry into a raw ADB grant. A lock from either
+route blocks the canonical device, and unknown relay aliases are refused.
+
+Use an isolated broker, ADB server, lock directory, and dedicated phone for
+staging qualification. Prove the staging process cannot access production ADB
+or host USB before enabling ADB, and restore staging to ADB-off after the run.
+No production enrollment is implied by a staging pass.
+
 This implementation makes no host config change and leaves admission closed.
 Do not copy fixture census, process IDs or grant references into the live fleet.
 

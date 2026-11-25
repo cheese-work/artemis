@@ -162,6 +162,8 @@ def artemis_locks_reader(lock_dir):
     partial records raise, closing admission; a stale record keeps its device
     blocked until Artemis's own stale-lock cleanup removes it.
     """
+    from device_lease.claims import sdk_lock_alias
+
     lock_dir = Path(lock_dir)
 
     def read():
@@ -176,7 +178,7 @@ def artemis_locks_reader(lock_dir):
             owner = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(owner, dict) or not isinstance(owner.get("device_id"), str):
                 raise ValueError("invalid artemis lock record")
-            devices.append(owner["device_id"])
+            devices.append(sdk_lock_alias(owner["device_id"], owner.get("webusb_claim_alias")))
         return devices
 
     return read
