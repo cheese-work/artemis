@@ -203,11 +203,34 @@ def refresh(composed, host_config, broker):
             _owner_file(host_config)
             config = json.loads(Path(host_config).read_text())
             _writers(config, composed, db_path)
-            grants = config["devices"]
-            expiry, reference = config["expires_at"], config["reference"]
+            # Pool authority is stable across claims. Lease grants are recorded
+            # per issue/run/serial by the broker, never by rewriting this file.
+            if "pool" in config:
+                pool = config["pool"]
+                if (
+                    any(key in config for key in ("devices", "reference", "expires_at"))
+                    or not isinstance(pool, dict)
+                    or set(pool)
+                    not in (
+                        {"name", "devices", "reference"},
+                        {"name", "devices", "expires_at", "reference"},
+                    )
+                    or pool["name"] != "rig"
+                ):
+                    raise ValueError("invalid rig pool authority")
+                grants = pool["devices"]
+                # Standing pool approval has no global issue window. Freshness
+                # still expires; each recorded lease retains its own TTL/cap.
+                expiry = pool["expires_at"] if "expires_at" in pool else time.time() + 7200
+                reference = pool["reference"]
+            else:
+                # Existing scoped host configurations remain readable for rollback.
+                grants = config["devices"]
+                expiry, reference = config["expires_at"], config["reference"]
             if (
                 not isinstance(grants, list)
                 or not grants
+                or any(not isinstance(serial, str) or not serial.strip() for serial in grants)
                 or len(set(grants)) != len(grants)
                 or type(expiry) not in (int, float)
                 or not math.isfinite(expiry)

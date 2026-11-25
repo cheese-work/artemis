@@ -331,6 +331,8 @@ def main(argv=None):
         if op == "acquire":
             command.add_argument("--pool", default="rig")
             command.add_argument("--device-id")
+            command.add_argument("--model", help="exact registered model")
+            command.add_argument("--api", type=int, help="exact registered Android API level")
             command.add_argument("--count", type=int, default=1)
             command.add_argument("--purpose", required=True)
             command.add_argument("--agent-id", required=True)

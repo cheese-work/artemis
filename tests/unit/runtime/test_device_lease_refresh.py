@@ -139,6 +139,87 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(self.ledger.snapshot()["claims"][0]["claim_id"], self.claim)
         self.assertTrue(self.broker.inventory()["admission_available"])
 
+    def pool_config(self):
+        self.prepare()
+        self.host["pool"] = dict(
+            name="rig",
+            devices=self.host.pop("devices"),
+            reference="CHE-9610 standing rig approval",
+            expires_at=self.host.pop("expires_at"),
+        )
+        self.host.pop("reference")
+
+    def test_pool_refresh_admits_all_visible_members_and_retains_owned_claims(self):
+        self.pool_config()
+        self.assertEqual(self.refresh(b"rig-1\tdevice\nrig-2\tdevice\nspare-1\tdevice\n"), 0)
+        rows = json.loads((self.root / "admitted.json").read_text())["devices"]
+        self.assertEqual([r["device_id"] for r in rows], ["rig-1", "rig-2"])
+        self.assertEqual({r["grant"]["reference"] for r in rows}, {self.host["pool"]["reference"]})
+        self.assertEqual(self.ledger.snapshot()["claims"][0]["claim_id"], self.claim)
+        # The pool remains configured when a phone disconnects; readiness does not.
+        self.assertEqual(self.refresh(b"rig-2\toffline\nrig-1\tdevice\n"), 0)
+        self.assertEqual(
+            [
+                r["device_id"]
+                for r in json.loads((self.root / "admitted.json").read_text())["devices"]
+            ],
+            ["rig-1"],
+        )
+
+    def test_standing_pool_has_no_global_expiry_window(self):
+        self.pool_config()
+        self.host["pool"].pop("expires_at")
+        before = time.time()
+        self.assertEqual(self.refresh(), 0)
+        grant = json.loads((self.root / "admitted.json").read_text())["devices"][0]["grant"]
+        self.assertEqual(grant["reference"], self.host["pool"]["reference"])
+        self.assertGreaterEqual(grant["expires_at"], before + 7200)
+        self.assertLessEqual(grant["expires_at"], time.time() + 7200)
+
+    def test_pool_rejects_restricted_spare_unknown_and_mixed_legacy_configuration(self):
+        self.pool_config()
+        pool = dict(self.host["pool"])
+        for change in (
+            {"devices": ["spare-1"]},
+            {"devices": ["500c592"]},
+            {"devices": ["unknown"]},
+            {"name": "spare"},
+            {"devices": ["rig-1", "rig-1"]},
+        ):
+            self.host["pool"] = pool | change
+            self.assertEqual(self.refresh(), 2)
+            self.assertFalse(self.broker.inventory()["admission_available"])
+        self.host["pool"] = pool
+        self.host["devices"] = ["rig-1"]
+        self.assertEqual(self.refresh(), 2)
+
+    def test_each_pool_lease_records_issue_run_serial_and_authority_independently(self):
+        self.pool_config()
+        self.ledger.release(self.claim, owner="other", run_id="retained-run")
+        self.assertEqual(self.refresh(b"rig-1\tdevice\nrig-2\tdevice\n"), 0)
+        groups = [
+            self.broker.acquire(
+                principal="executor",
+                agent_id="executor",
+                issue_id=f"CHE-{i}",
+                run_id=f"run-{i}",
+                purpose="pool fixture",
+                ttl=300,
+                idempotency_key=f"key-{i}",
+            )
+            for i in (1, 2)
+        ]
+        for i, group in enumerate(groups, 1):
+            readback = self.broker.status(
+                lease_id=group["lease_id"], principal="executor", run_id=f"run-{i}"
+            )
+            (grant,) = readback["grants"]
+            self.assertEqual(grant["issue_id"], f"CHE-{i}")
+            self.assertEqual(grant["run_id"], f"run-{i}")
+            self.assertEqual(grant["device_id"], group["devices"][0]["device_id"])
+            self.assertEqual(grant["reference"], self.host["pool"]["reference"])
+        self.assertNotEqual(groups[0]["devices"], groups[1]["devices"])
+
     def test_missing_adb_never_starts_it_or_renews_physical_expiry(self):
         self.prepare()
         self.assertEqual(self.refresh(), 0)
