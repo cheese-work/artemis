@@ -1,0 +1,79 @@
+{
+  "manifest_version": 1,
+  "issue": "CHE-9833",
+  "parent_issue": "CHE-801",
+  "candidate_kind": "testcase",
+  "status": "provisional",
+  "journey": "qualification/journeys/billing_paywall_test_store_mmonetize.md",
+  "runner": {
+    "repository": "https://github.com/cheese-work/artemis",
+    "base": "main"
+  },
+  "app": {
+    "repository": "https://github.com/tevo-studio/mMonetize-sample",
+    "commit_sha": "c8cdf33bae61bb76577f0dacb14604011fe7e83d",
+    "sdk_repository": "https://github.com/tevo-studio/mMonetize",
+    "sdk_ref": "release/0.0.28",
+    "sdk_commit_sha": "cc2a1cb9b94e7db675cb6826df7b867895a19d4d",
+    "package_name": "io.mmonetize.sample",
+    "entry": "Paywall — Real offering",
+    "activity": "BillingPaywallDemoActivity",
+    "build_sha": "recorded_at_execution"
+  },
+  "revenuecat_test_store": {
+    "product_id": "che801_premium_monthly_test",
+    "entitlement_id": "premium",
+    "offering_id": "che801_test",
+    "api_key": "never_record"
+  },
+  "cases": {
+    "A": {
+      "name": "offering_and_prices",
+      "assertion": "The plan list shows the che801_test packages with their localized Test Store prices."
+    },
+    "B": {
+      "name": "purchase_monthly",
+      "assertion": "The Test Store purchase shows Premium active, closes BillingPaywallDemoActivity, and leaves the premium entitlement active."
+    },
+    "C": {
+      "name": "restore_after_app_data_clear",
+      "assertion": "After pm clear and reopening the sample, Restore returns Active, onPurchased fires, and the premium entitlement is recorded."
+    },
+    "D": {
+      "name": "cancel_purchase",
+      "assertion": "Canceling the Test Store dialog shows no error, keeps the paywall open, and leaves the premium entitlement inactive."
+    },
+    "E": {
+      "name": "billing_not_configured",
+      "assertion": "The build without a RevenueCat key shows Billing is not configured."
+    }
+  },
+  "fixture_reset": {
+    "before_each_case": "adb -s <device_serial> shell pm clear io.mmonetize.sample",
+    "pm_clear_is_install": false,
+    "case_C_restores_purchase_created_by": "B",
+    "case_E_requires_build_without_revenuecat_key": true,
+    "shared_device_state_reset": false
+  },
+  "evidence_per_case": [
+    "screenshot",
+    "logcat_line",
+    "revenuecat_customer_entitlement_state",
+    "testcase_revision",
+    "app_build_sha",
+    "device_serial",
+    "command_exit_status"
+  ],
+  "review_contract": {
+    "independent_non_author_reviewers_required": 2,
+    "same_revision_required": true,
+    "must_precede_execution": true
+  },
+  "authoring_boundary": {
+    "device_or_adb_commands_run": false,
+    "apk_built_or_installed": false,
+    "artemis_execution": false,
+    "accepted_execution_evidence": false
+  },
+  "execution_status": "NOT-RUN"
+}
