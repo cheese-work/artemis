@@ -54,6 +54,8 @@ from apps.admin_console.core.ownership import (
     require_catalog_ready,
     require_signed_in,
     require_visible_run,
+    service_run_owner,
+    smartqa_run_scope,
 )
 from apps.admin_console.core.redaction import redact_image_data, redact_json
 
@@ -267,7 +269,7 @@ async def run_task(
             or requested_sid in state.active_connections
         )
         if existing_item or persisted_session or is_active:
-            require_access(scope, requested_sid)
+            require_access(smartqa_run_scope(identity) if smartqa else scope, requested_sid)
             existing = dict(existing_item or persisted_session or {})
             device_info = json.loads(existing.get("device_info") or "{}")
             binding = existing.get("device_binding") or device_info.get("device_binding") or {}
@@ -415,7 +417,7 @@ async def run_task(
             session_id=request.session_id,
             conversation_id=request.conversation_id,
             run_id=request.run_id,
-            requested_by=scope.email,
+            requested_by=scope.email or (service_run_owner(identity) if smartqa else None),
             goal_images=goal_images,
             bridge_session_id=request.bridge_session_id,
             model=selected_model,
@@ -540,6 +542,7 @@ async def stop_task(
     session_id: str | None = None,
     device_id: str | None = None,
     actor: OwnerScope = Depends(actor_scope),
+    identity: AccessIdentity = Depends(public_tier),
 ):
     scope = require_actor(actor)
     target_all = all
@@ -559,6 +562,8 @@ async def stop_task(
         # Empty or non-JSON body: fall back to the query parameters.
         pass
 
+    if identity.service_principal and target_sid and not (target_all or target_dev):
+        return _stop_for_non_admin(smartqa_run_scope(identity), False, target_sid, None)
     if scope.enforced and not scope.admin:
         return _stop_for_non_admin(scope, target_all, target_sid, target_dev)
 

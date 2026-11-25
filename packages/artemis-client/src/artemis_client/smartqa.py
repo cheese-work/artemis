@@ -23,6 +23,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from artemis_client.client import ArtemisClient
 from artemis_client.errors import ApiError, ArtemisClientError, ConflictError, TaskRejectedError
@@ -244,6 +245,9 @@ class ThemeResult:
 class CheckResult:
     apk_sha256: str
     themes: tuple[ThemeResult, ...] = field(default_factory=tuple)
+    green: bool = False
+    report_url: str | None = None
+    report_error: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -252,14 +256,17 @@ class CheckResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
+            "green": self.green,
             "apk_sha256": self.apk_sha256,
+            "report_url": self.report_url,
+            "report_error": self.report_error,
             "themes": [t.__dict__ for t in self.themes],
         }
 
 
 def _validate(options: CheckOptions) -> None:
     unknown = [t for t in options.themes if t not in THEMES]
-    if not options.themes or unknown:
+    if not options.themes or unknown or len(set(options.themes)) != len(options.themes):
         raise CheckError("usage", f"themes must be a non-empty subset of {', '.join(THEMES)}")
     if options.persona not in PERSONAS:
         raise CheckError("usage", f"persona must be one of {', '.join(PERSONAS)}")
@@ -389,8 +396,37 @@ async def run_check(client: ArtemisClient, options: CheckOptions) -> CheckResult
     manifest = load_manifest(options.manifest)
     route = load_route(options.route) if options.route else None
     stored = await _upload(client, options)
-    results = [
-        await _check_theme(client, options, manifest, route, stored, theme)
-        for theme in options.themes
-    ]
-    return CheckResult(stored["sha256"], tuple(results))
+    results = tuple(
+        [
+            await _check_theme(client, options, manifest, route, stored, theme)
+            for theme in options.themes
+        ]
+    )
+    digest = stored["sha256"]
+    if not route or any(result.status not in _SELF_ENDED for result in results):
+        return CheckResult(digest, results, report_error="report_unavailable")
+    query = urlencode(
+        [("apk_sha256", digest), *(("session_id", result.task_id) for result in results)]
+    )
+    path = f"/api/smartqa/report?{query}"
+    try:
+        report = await client.request_json("GET", path)
+    except ArtemisClientError as exc:
+        mismatch = (
+            isinstance(exc, ApiError)
+            and isinstance(exc.payload, Mapping)
+            and exc.payload.get("code") == "report_apk_mismatch"
+        )
+        error = "report_apk_mismatch" if mismatch else "report_unavailable"
+        return CheckResult(digest, results, report_error=error)
+    if report.get("apk_sha256") != digest:
+        return CheckResult(digest, results, report_error="report_apk_mismatch")
+    if not isinstance(verdict := report.get("green"), bool) or (
+        verdict and any(result.status == "failed" for result in results)
+    ):
+        return CheckResult(digest, results, report_error="report_invalid")
+    base = urlsplit(client.base_url)
+    report_url = urlunsplit(
+        (base.scheme, base.netloc.rsplit("@", 1)[-1], base.path + "/api/smartqa/report", query, "")
+    )
+    return CheckResult(digest, results, green=verdict, report_url=report_url)

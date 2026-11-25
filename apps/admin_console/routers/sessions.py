@@ -19,7 +19,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from artemis.config import DB_PATH, TRACES_PATH
-from apps.admin_console.core.access_control import AdminAPIError, require_admin, require_qa
+from apps.admin_console.core.access_control import (
+    AccessIdentity,
+    AdminAPIError,
+    public_tier,
+    require_admin,
+    require_qa,
+)
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
@@ -27,9 +33,12 @@ from apps.admin_console.core.ownership import (
     list_scope,
     owners_of,
     present_session_data,
+    record_run_read,
     require_access,
     require_actor,
     require_catalog_ready,
+    require_visible_run,
+    smartqa_run_scope,
 )
 from apps.admin_console.core.redaction import redact_image_data, redact_json
 from apps.admin_console.routers.run_admin import ClearRequest
@@ -169,12 +178,23 @@ def _list_sessions_sync(scope: OwnerScope):
 
 
 @router.get("/api/sessions/{session_id}")
-async def get_session_details(session_id: str, actor: OwnerScope = Depends(evidence_scope)):
+async def get_session_details(
+    session_id: str,
+    actor: OwnerScope = Depends(actor_scope),
+    identity: AccessIdentity = Depends(public_tier),
+):
     """Retrieve details for a single automation session."""
+    if identity.service_principal:
+        actor = smartqa_run_scope(identity)
+        await asyncio.to_thread(require_access, actor, session_id)
+    await asyncio.to_thread(require_visible_run, actor, [session_id])
     row = session_repo.get_session_by_id(session_id)
     if not row:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    return present_session_data(actor, session_id, dict(row))
+    data = present_session_data(actor, session_id, dict(row))
+    if not identity.service_principal:
+        await asyncio.to_thread(record_run_read, actor, session_id)
+    return data
 
 
 @router.get("/api/sessions/{session_id}/goal-images/{index}")

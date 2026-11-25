@@ -7,9 +7,12 @@ import tempfile
 import unittest
 import uuid
 from collections import defaultdict
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from urllib.parse import urlencode
 
 from artemis_client import (
     ApiError,
@@ -32,6 +35,10 @@ from artemis_client.smartqa_cli import main as cli_main
 
 APK_BYTES = b"PK\x03\x04fake-apk"
 APK_SHA = hashlib.sha256(APK_BYTES).hexdigest()
+REPORT_PATH = "/api/smartqa/report?" + urlencode(
+    [("apk_sha256", APK_SHA)]
+    + [("session_id", f"00000000-0000-4000-8000-00000000000{index}") for index in range(2)]
+)
 MANIFEST = """\
 package: com.example.sample
 backend: staging
@@ -200,7 +207,11 @@ class RunCheckTests(SmartQATestCase):
 
     async def test_route_mode_sends_steps_and_skips_the_persona(self) -> None:
         self.queue_happy_path(themes=1)
-        await run_check(self.client, self.options(themes=("light",), route=self.route))
+        self.transport.add(
+            "GET", REPORT_PATH.rsplit("&", 1)[0], {"apk_sha256": APK_SHA, "green": True}
+        )
+        result = await run_check(self.client, self.options(themes=("light",), route=self.route))
+        self.assertTrue(result.green)
         smartqa = self.transport.calls[2][2]["options"]["smartqa"]
         self.assertEqual(smartqa["mode"], "route")
         self.assertEqual(len(smartqa["route"]), 4)
@@ -422,6 +433,52 @@ class ReviewRegressionTests(SmartQATestCase):
 
 
 class CliTests(SmartQATestCase):
+    def check_with_report(self, *, green: bool, report_sha: str = APK_SHA):
+        self.queue_happy_path()
+        self.transport.add("GET", REPORT_PATH, {"apk_sha256": report_sha, "green": green})
+        output = StringIO()
+        with (
+            patch("artemis_client.smartqa_cli.ArtemisClient", return_value=self.client),
+            redirect_stdout(output),
+        ):
+            code = cli_main(
+                [
+                    "check",
+                    "--apk",
+                    str(self.apk),
+                    "--manifest",
+                    str(self.manifest),
+                    "--route",
+                    str(self.route),
+                    "--server",
+                    self.client.base_url,
+                ],
+                env={"ARTEMIS_TOKEN": "fixture"},
+            )
+        return code, json.loads(output.getvalue())
+
+    def test_green_report_passes(self) -> None:
+        code, result = self.check_with_report(green=True)
+        self.assertEqual(code, 0)
+        self.assertIs(result["green"], True)
+        self.assertEqual(result["apk_sha256"], APK_SHA)
+        self.assertEqual(result["report_url"], self.client.base_url + REPORT_PATH)
+
+    def test_red_report_fails_even_when_both_runs_complete(self) -> None:
+        code, result = self.check_with_report(green=False)
+        self.assertEqual(code, 1)
+        self.assertIs(result["ok"], True)
+        self.assertIs(result["green"], False)
+        self.assertEqual(result["report_url"], self.client.base_url + REPORT_PATH)
+
+    def test_green_report_for_another_apk_does_not_pass(self) -> None:
+        code, result = self.check_with_report(green=True, report_sha="0" * 64)
+        self.assertEqual(code, 1)
+        self.assertIs(result["green"], False)
+        self.assertEqual(result["apk_sha256"], APK_SHA)
+        self.assertIsNone(result["report_url"])
+        self.assertEqual(result["report_error"], "report_apk_mismatch")
+
     def test_missing_token_is_refused_for_a_remote_server(self) -> None:
         code = cli_main(
             [

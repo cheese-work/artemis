@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from hashlib import sha256
 from typing import Any
 
 from fastapi import Depends, HTTPException, Query, Request
@@ -234,6 +235,19 @@ def scope_for(identity: AccessIdentity, *, include_all: bool = False) -> OwnerSc
         identity.history_emails,
         identity.principal_id,
     )
+
+
+def service_run_owner(identity: AccessIdentity) -> str | None:
+    """Store service-owned runs in a namespace separate from human email addresses."""
+    if identity.service_principal:
+        return "service:" + sha256(identity.service_principal.encode()).hexdigest()
+    return None
+
+
+def smartqa_run_scope(identity: AccessIdentity) -> OwnerScope:
+    if owner := service_run_owner(identity):
+        return OwnerScope(enforced=True, email=owner)
+    return scope_for(identity)
 
 
 async def list_scope(
