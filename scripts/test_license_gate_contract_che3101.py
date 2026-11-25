@@ -71,9 +71,22 @@ class LicenseGateContractTest(unittest.TestCase):
                 self.assertIn("database", text)
                 self.assertIn("docker compose", text)
                 self.assertTrue(all(value in text for value in SCENARIOS.values()))
-                self.assertEqual(data["initialization"]["coverage"], "NOT-PROVEN")
-                self.assertIn(
-                    "Do not report a license-result label as proof of initialization", text
+                self.assertEqual(data["initialization"]["coverage"], "ASSERTED_PER_CASE")
+                init_log = data["observation"]["initialization_log"]
+                self.assertEqual(init_log["tag"], "LicenseProof")
+                self.assertEqual(init_log["level"], "INFO")
+                self.assertEqual(init_log["matches_per_case"], 1)
+                self.assertTrue(init_log["same_launch_pid"])
+                self.assertEqual(init_log["wait_timeout_seconds"], 12)
+                self.assertTrue(init_log["missing_or_duplicate_or_error_fails"])
+                self.assertEqual(
+                    init_log["message_regex_by_case"],
+                    {
+                        "approved": "init=proceeded",
+                        "pending": "init=denied",
+                        "revoked": "init=denied",
+                        "offline-no-cache": "init=proceeded",
+                    },
                 )
                 self.assertTrue(data["observation"]["denial_log"]["tag"])
                 self.assertIn(data["observation"]["denial_log"]["level"], {"ERROR", "WARN"})
@@ -97,7 +110,8 @@ class LicenseGateContractTest(unittest.TestCase):
                 self.assertTrue(
                     all(json.dumps(value)[1:-1] in text for value in expected_result_logs.values())
                 )
-                self.assertIn("without contacting the service", text)
+                self.assertIn("queues a background license fetch", text)
+                self.assertIn("does not skip contacting the service", text)
                 self.assertIn("NOT-RUN", data["scenarios"]["debug-pending"])
                 self.assertTrue(
                     {"logcat", "screen", "server_row", "app_package", "device_serial"}

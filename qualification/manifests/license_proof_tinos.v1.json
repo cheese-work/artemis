@@ -36,7 +36,7 @@
     "pending": "LicenseResult.NotLicensed; server row stays pending; one SDK denial log",
     "revoked": "LicenseResult.NotLicensed; server row stays revoked; one SDK denial log",
     "offline-no-cache": "LicenseResult.Unverified transport failure; app remains usable; service is stopped",
-    "debug-pending": "NOT-RUN: debuggable client returns LicenseResult.Licensed without contacting the service; server-seen acceptance is unresolved"
+    "debug-pending": "NOT-RUN: debuggable client queues a background license fetch and returns LicenseResult.Licensed; compatible debug input unavailable"
   },
   "case_order": [
     "pending",
@@ -71,12 +71,25 @@
         "offline-no-cache": "LicenseResult\\.Unverified:",
         "debug-pending": "LicenseResult\\.Licensed"
       }
+    },
+    "initialization_log": {
+      "tag": "LicenseProof",
+      "level": "INFO",
+      "message_regex_by_case": {
+        "approved": "init=proceeded",
+        "pending": "init=denied",
+        "revoked": "init=denied",
+        "offline-no-cache": "init=proceeded"
+      },
+      "matches_per_case": 1,
+      "same_launch_pid": true,
+      "wait_timeout_seconds": 12,
+      "source": "MainActivity.kt:43-44",
+      "missing_or_duplicate_or_error_fails": true
     }
   },
   "initialization": {
-    "coverage": "NOT-PROVEN",
-    "gap_owner": "CHE-3101 before acceptance",
-    "reason": "The pinned sample publishes the typed license callback result, but it has no observable that proves runtime construction succeeded or was denied."
+    "coverage": "ASSERTED_PER_CASE"
   },
   "debug_case_input": {
     "required": "A debuggable variant that routes to the X99 license-test endpoint",

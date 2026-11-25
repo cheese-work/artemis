@@ -39,7 +39,7 @@
     "pending": "NotLicensed; server row stays pending; one SDK denial log",
     "revoked": "NotLicensed; server row stays revoked; one SDK denial log",
     "offline-no-cache": "Unverified transport failure; app remains usable; service is stopped",
-    "debug-pending": "NOT-RUN: debuggable client returns Licensed without contacting the service; server-seen acceptance is unresolved"
+    "debug-pending": "NOT-RUN: debuggable client queues a background license fetch and returns Licensed; compatible debug input unavailable"
   },
   "case_order": [
     "pending",
@@ -74,12 +74,24 @@
         "offline-no-cache": "Unverified\\(reason=",
         "debug-pending": "(?<!Not)Licensed"
       }
+    },
+    "initialization_log": {
+      "tag": "LicenseProof",
+      "level": "INFO",
+      "message_regex_by_case": {
+        "approved": "init=proceeded",
+        "pending": "init=denied",
+        "revoked": "init=denied",
+        "offline-no-cache": "init=proceeded"
+      },
+      "matches_per_case": 1,
+      "same_launch_pid": true,
+      "wait_timeout_seconds": 12,
+      "missing_or_duplicate_or_error_fails": true
     }
   },
   "initialization": {
-    "coverage": "NOT-PROVEN",
-    "gap_owner": "CHE-3101 before acceptance",
-    "reason": "The pinned sample exposes the license result and logs initialization exceptions, but it has no success observable that proves initialization proceeded or was denied."
+    "coverage": "ASSERTED_PER_CASE"
   },
   "debug_case_input": {
     "required": "A debuggable variant that routes to the X99 license-test endpoint",
