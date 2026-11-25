@@ -266,3 +266,139 @@ def test_squid_applies_connect_acl_to_both_pin_families(tmp_path):
     assert result.stdout.splitlines() == [
         f"{authority} {status}" for authority, status in cases.items()
     ]
+
+
+ROOT = Path(__file__).resolve().parents[3]
+PROXY_UID = 987
+
+
+def _chain(ruleset, name):
+    """Return the stripped rule lines of one chain (hermetic text parse; no nft)."""
+    block = ruleset.split(f"chain {name} {{\n", 1)[1].split("\n  }", 1)[0]
+    return [line.strip() for line in block.splitlines()]
+
+
+def test_acquisition_ruleset_is_one_inet_table_with_policy_drop():
+    ruleset = egress.render_acquisition_ruleset(PROXY_UID)
+    assert ruleset.count("table ") == 1
+    assert ruleset.startswith("table inet artemis_preview_egress {\n")
+    assert ruleset.count("policy drop;") == 2  # input and output
+    assert "policy accept" not in ruleset
+    assert "hook output" in ruleset and "hook input" in ruleset
+
+
+def test_non_proxy_uid_cannot_open_tcp_443_udp_or_dns():
+    ruleset = egress.render_acquisition_ruleset(PROXY_UID)
+    accepts = [line for line in _chain(ruleset, "output") if line.endswith("accept")]
+    assert accepts == [
+        "ct state established,related accept",
+        'oifname "lo" tcp dport 3128 ct state new accept',
+        f"meta skuid {PROXY_UID} meta nfproto ipv4 tcp dport 443 ct state new accept",
+        f"meta skuid {PROXY_UID} ip6 daddr 2000::/3 tcp dport 443 ct state new accept",
+    ]
+    # Every route to 443 carries the proxy UID; nothing allows UDP or port 53.
+    assert all(f"skuid {PROXY_UID}" in line for line in accepts if "dport 443" in line)
+    assert "udp" not in ruleset
+    assert "dport 53" not in ruleset
+    assert "dport 53" not in "".join(_chain(ruleset, "input"))
+
+
+def test_proxy_uid_denied_ranges_are_dropped_before_any_443_accept():
+    ruleset = egress.render_acquisition_ruleset(PROXY_UID)
+    rules = _chain(ruleset, "output")
+    first_443 = next(i for i, line in enumerate(rules) if "dport 443" in line)
+    drops = rules[:first_443]
+    v4 = next(line for line in drops if line.startswith(f"meta skuid {PROXY_UID} ip daddr {{"))
+    v6 = next(line for line in drops if line.startswith(f"meta skuid {PROXY_UID} ip6 daddr {{"))
+    assert v4.endswith("drop") and v6.endswith("drop")
+    for network in egress.DENIED_IPV4:
+        assert str(network) in v4
+    for network in (*egress.DENIED_GLOBAL_UNICAST_IPV6, *egress.SQUID_DENIED_IPV6):
+        assert str(network) in v6
+    for form in ("::ffff:0:0/96", "64:ff9b::/96", "64:ff9b:1::/48", "::/128", "::1/128"):
+        assert form in v6  # IPv4-mapped, both NAT64 prefixes, unspecified, loopback
+
+
+def test_denied_sets_do_not_overlap_because_nft_rejects_overlapping_elements():
+    for networks in (
+        egress.DENIED_IPV4,
+        egress.ACQUISITION_DENIED_IPV6,
+    ):
+        for index, network in enumerate(networks):
+            assert not any(network.overlaps(other) for other in networks[index + 1 :])
+
+
+def test_denied_ipv6_covers_everything_outside_global_unicast_or_is_not_accepted():
+    # The IPv6 accept rule only matches 2000::/3, so every denied range outside it
+    # (mapped, NAT64, ULA, link-local) has no accept path even without the drop rule.
+    outside = [
+        n for n in egress.ACQUISITION_DENIED_IPV6 if not n.subnet_of(egress.IPV6_GLOBAL_UNICAST)
+    ]
+    assert {str(n) for n in outside} >= {
+        "::ffff:0.0.0.0/96",
+        "64:ff9b::/96",
+        "fc00::/7",
+        "fe80::/10",
+    }
+
+
+def test_loopback_is_allowed_only_to_the_proxy_port():
+    ruleset = egress.render_acquisition_ruleset(PROXY_UID)
+    assert [line for line in _chain(ruleset, "input") if line.endswith("accept")] == [
+        "ct state established,related accept",
+        'iifname "lo" tcp dport 3128 ct state new accept',
+    ]
+    assert ruleset.count('"lo"') == 2
+    assert "3128" not in ruleset.replace("tcp dport 3128", "")  # no other port literal use
+
+
+@pytest.mark.parametrize("uid", [0, -1, True, False, 2**32 - 1, 2**32, "987", 987.0, None])
+def test_invalid_proxy_uid_is_refused(uid):
+    with pytest.raises(ValueError):
+        egress.render_acquisition_ruleset(uid)
+
+
+def test_ruleset_uid_is_rendered_only_as_an_integer():
+    assert "skuid 65534 " in egress.render_acquisition_ruleset(65534)
+
+
+def test_checked_in_acquisition_ruleset_matches_the_renderer():
+    checked_in = ROOT / "config/preview/egress-acquisition.nft"
+    assert checked_in.read_text(encoding="utf-8") == egress.render_acquisition_ruleset(
+        egress.PROXY_UID_PLACEHOLDER
+    )
+
+
+def test_proxy_unit_is_a_locked_down_squid_with_the_checked_in_config():
+    unit = (ROOT / "config/preview/artemis-preview-egress.service").read_text(encoding="utf-8")
+    lines = unit.splitlines()
+    assert "User=artemis-preview-egress" in lines
+    assert "Group=artemis-preview-egress" in lines
+    assert "NoNewPrivileges=true" in lines
+    assert "CapabilityBoundingSet=" in lines
+    assert "AmbientCapabilities=" in lines
+    assert "ProtectSystem=strict" in lines
+    assert "ProtectHome=true" in lines
+    assert "PrivateTmp=true" in lines
+    assert "RuntimeDirectory=artemis-preview-egress" in lines
+    assert "ReadWritePaths=" not in unit  # only the runtime and log directories are writable
+    assert "WantedBy=" not in unit  # file only: never enabled by itself
+    exec_start = next(line for line in lines if line.startswith("ExecStart="))
+    assert exec_start == "ExecStart=/usr/sbin/squid -N -f /etc/artemis-preview/egress-squid.conf"
+    assert not any(line.startswith("ExecStartPre=+") for line in lines)  # no root helper
+
+
+def test_proxy_account_is_a_no_login_system_user():
+    sysusers = (ROOT / "config/preview/sysusers.conf").read_text(encoding="utf-8")
+    assert (
+        'u artemis-preview-egress - "Artemis preview egress proxy" /nonexistent /usr/sbin/nologin'
+        in (sysusers.splitlines())
+    )
+
+
+def test_egress_doc_is_linked_and_covers_flow_bypass_rollback_and_risk():
+    build = (ROOT / "docs/preview-build.md").read_text(encoding="utf-8")
+    assert "preview-egress.md" in build
+    doc = (ROOT / "docs/preview-egress.md").read_text(encoding="utf-8")
+    for heading in ("## Acquisition flow", "## Bypass tests", "## Rollback", "## Remaining risk"):
+        assert heading in doc

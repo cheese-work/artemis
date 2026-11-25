@@ -29,7 +29,8 @@ user/global npm configuration with two distinct paths to the null device
 Use the trusted toolchain and a private npm cache/home; supply only controlled runtime values
 such as `PATH` and `HOME`. Do not inherit registry, bypass or proxy settings.
 The acquisition namespace must enforce proxy-only egress; the plan itself
-does not configure or enforce a network policy.
+does not configure or enforce a network policy. The ruleset, proxy unit and
+bypass tests are in [`preview-egress.md`](preview-egress.md).
 
 ## 2. Stage, verify, and build offline
 

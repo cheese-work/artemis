@@ -8,6 +8,9 @@ ALLOWED_HOSTS: tuple[str, ...] = ("registry.npmjs.org", "pypi.org", "files.pytho
 HTTPS_PORT = 443
 MAX_HOPS = 5
 HOSTS_PIN_PATH = "/run/artemis-preview/egress.hosts"
+PROXY_PORT = 3128
+# Stand-in UID in the checked-in ruleset; the host substitutes the account's real UID.
+PROXY_UID_PLACEHOLDER = 65533
 
 DENIED_IPV4 = tuple(
     IPv4Network(cidr)
@@ -42,6 +45,13 @@ SQUID_DENIED_IPV6 = (
     "fe80::/10",
     "fec0::/10",
     "ff00::/8",
+)
+# nftables rejects overlapping elements in one set; a test keeps these disjoint.
+ACQUISITION_DENIED_IPV6 = (
+    *DENIED_GLOBAL_UNICAST_IPV6,
+    *map(IPv6Network, SQUID_DENIED_IPV6),
+    IPv6Network("::/128"),
+    IPv6Network("::ffff:0:0/96"),
 )
 
 
@@ -114,7 +124,7 @@ def render_proxy_config(listen_address: str = "127.0.0.1") -> str:
     bind_host = f"[{address}]" if address.version == 6 else str(address)
     denied_ipv4 = " ".join(map(str, DENIED_IPV4))
     denied_ipv6 = " ".join((*map(str, DENIED_GLOBAL_UNICAST_IPV6), *SQUID_DENIED_IPV6))
-    return f"""http_port {bind_host}:3128
+    return f"""http_port {bind_host}:{PROXY_PORT}
 hosts_file {HOSTS_PIN_PATH}
 dns_nameservers 127.0.0.1
 dns_multicast_local off
@@ -135,4 +145,37 @@ http_access deny preview_denied_ipv4
 http_access deny preview_denied_ipv6
 http_access allow preview_resolved
 http_access deny all
+"""
+
+
+def render_acquisition_ruleset(proxy_uid: int) -> str:
+    """Render the acquisition-namespace nftables table: proxy-only egress, nothing else.
+
+    Only the proxy account may open new TCP 443, and never to a denied range. The
+    namespace's clients reach the proxy over loopback; DNS and UDP have no rule.
+    """
+    if type(proxy_uid) is not int or not 0 < proxy_uid < 2**32 - 1:
+        raise ValueError("proxy_uid must be a non-root 32-bit user ID")
+    denied4 = ", ".join(map(str, DENIED_IPV4))
+    # Python prints the mapped prefix as ::ffff:0.0.0.0/96; keep nft on the hex form.
+    denied6 = ", ".join(
+        str(net).replace("::ffff:0.0.0.0/96", "::ffff:0:0/96") for net in ACQUISITION_DENIED_IPV6
+    )
+    proxy = f"meta skuid {proxy_uid}"
+    return f"""table inet artemis_preview_egress {{
+  chain input {{
+    type filter hook input priority 0; policy drop;
+    ct state established,related accept
+    iifname "lo" tcp dport {PROXY_PORT} ct state new accept
+  }}
+  chain output {{
+    type filter hook output priority 0; policy drop;
+    ct state established,related accept
+    oifname "lo" tcp dport {PROXY_PORT} ct state new accept
+    {proxy} ip daddr {{ {denied4} }} drop
+    {proxy} ip6 daddr {{ {denied6} }} drop
+    {proxy} meta nfproto ipv4 tcp dport {HTTPS_PORT} ct state new accept
+    {proxy} ip6 daddr {IPV6_GLOBAL_UNICAST} tcp dport {HTTPS_PORT} ct state new accept
+  }}
+}}
 """
