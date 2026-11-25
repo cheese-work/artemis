@@ -12,6 +12,14 @@ import re
 
 
 @dataclass(frozen=True)
+class AdmissionSnapshot:
+    """Validated owner readiness, including the authority for each endpoint."""
+
+    endpoints: dict[str, str]
+    grants: dict[str, dict]
+
+
+@dataclass(frozen=True)
 class Device:
     device_id: str
     aliases: tuple[str, ...] = ()

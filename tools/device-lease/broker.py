@@ -18,7 +18,7 @@ import uuid
 
 import audit
 
-from registry import Device, DeviceRegistry
+from registry import AdmissionSnapshot, Device, DeviceRegistry
 
 from device_lease import canonical_ids, write_transaction
 
@@ -75,6 +75,11 @@ _DDL = (
     "journal TEXT, identity TEXT, UNIQUE(generation,grant_ref))",
     "CREATE TABLE IF NOT EXISTS broker_avd_work (lease_id TEXT PRIMARY KEY, "
     "grant TEXT NOT NULL, lock_path TEXT NOT NULL, owner TEXT NOT NULL, peer TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS broker_device_usage (device_id TEXT PRIMARY KEY, last_used_at REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS broker_ticket_filters (ticket_id TEXT PRIMARY KEY, model TEXT, api INTEGER)",
+    "CREATE TABLE IF NOT EXISTS broker_claim_grants (lease_id TEXT NOT NULL, device_id TEXT NOT NULL, "
+    "agent_id TEXT NOT NULL, issue_id TEXT NOT NULL, run_id TEXT NOT NULL, reference TEXT NOT NULL, "
+    "granted_at REAL NOT NULL, expires_at REAL NOT NULL, PRIMARY KEY(lease_id, device_id))",
 )
 
 
@@ -225,6 +230,10 @@ class Broker:
             if entry["snapshot"]["conflicting_waiter"]:
                 raise Refused("conflicting_waiter")
             expiry = min(now + ttl, group["hard_deadline"])
+            if group["grants"]:
+                expiry = min(expiry, *(grant["expires_at"] for grant in group["grants"]))
+                if expiry <= now:
+                    raise Refused("lease_expired")
             conn.execute(
                 "UPDATE broker_groups SET expires_at=?, ttl=? WHERE lease_id=?",
                 (expiry, ttl, lease_id),
@@ -290,6 +299,7 @@ class Broker:
                         "aliases": list(device.aliases),
                         "pool": device.pool,
                         "model": device.model,
+                        "api": device.api,
                         "restricted": device.restricted,
                         "eligible": reason is None,
                         "reason": reason,
@@ -363,6 +373,8 @@ class Broker:
                         conn.execute("SELECT 1 FROM broker_reconcile LIMIT 1").fetchone()
                     ),
                     "admitted": dict(self.admitted),
+                    "grants": dict(self._admission.grants),
+                    "device_usage": self._usage(conn),
                     "inventory": list(inventory.values()),
                     "groups": [
                         self._view(conn, r[0])
@@ -509,6 +521,7 @@ class Broker:
             # Trusted readers only. Failure/unknown identity closes admission; no stale cache.
             blocked = set()
             self._admission.artemis = set()
+            self._admission.grants = {}
             self._admission.unavailable = (
                 not {"artemis", "android"} <= self.admission_sources.keys()
                 or self.admission_guard is nullcontext
@@ -517,6 +530,9 @@ class Broker:
                 # Stale or failed readiness admits nothing; no cached snapshot survives.
                 try:
                     snapshot = self.admission_snapshot()
+                    if isinstance(snapshot, AdmissionSnapshot):
+                        self._admission.grants = snapshot.grants
+                        snapshot = snapshot.endpoints
                     if not isinstance(snapshot, dict) or any(
                         not isinstance(k, str) or not isinstance(v, str)
                         for k, v in snapshot.items()
@@ -525,6 +541,7 @@ class Broker:
                     self.admitted = dict(snapshot)
                 except Exception:
                     self.admitted = {}
+                    self._admission.grants = {}
                     self._admission.unavailable = True
             try:
                 for source, reader in self.admission_sources.items():
@@ -650,6 +667,10 @@ class Broker:
                 else None
             )
             if event:
+                if row["state"] == "released":
+                    self._used(
+                        conn, now, [d["device_id"] for d in self._view(conn, key)["devices"]]
+                    )
                 if row["state"] == "fencing":
                     binding = conn.execute(
                         "SELECT expiry_mono,heartbeat_mono,binding FROM broker_bindings WHERE lease_id=?",
@@ -805,7 +826,7 @@ class Broker:
         )
         self._schedule(conn, now)
 
-    def _candidates(self, pool, target=None, *, starting=False):
+    def _candidates(self, pool, target=None, *, starting=False, model=None, api=None):
         if starting:
             proof = self._admission.startup
             device = (
@@ -830,10 +851,37 @@ class Broker:
             canonical
             for canonical in ids
             if self.registry.resolve(canonical).pool == pool
+            and self.registry.resolve(canonical).pool != "spare"
+            and (model is None or self.registry.resolve(canonical).model == model)
+            and (api is None or self.registry.resolve(canonical).api == api)
             and self.admitted.get(canonical)
             and self._canonical(self.admitted[canonical]) == canonical
             and self.registry.eligible(self.admitted[canonical], "device")
         ]
+
+    @staticmethod
+    def _used(conn, now, devices):
+        conn.executemany(
+            "INSERT INTO broker_device_usage VALUES (?,?) ON CONFLICT(device_id) "
+            "DO UPDATE SET last_used_at=excluded.last_used_at",
+            [(device, now) for device in devices],
+        )
+
+    @staticmethod
+    def _usage(conn):
+        # Historical groups provide a fallback on the first upgraded decision.
+        used = dict(
+            conn.execute(
+                "SELECT d.device_id, max(g.started_at) FROM broker_devices d "
+                "JOIN broker_groups g USING (lease_id) GROUP BY d.device_id"
+            )
+        )
+        used.update(conn.execute("SELECT device_id,last_used_at FROM broker_device_usage"))
+        return used
+
+    def _idle_order(self, conn, devices):
+        used = self._usage(conn)
+        return sorted(devices, key=lambda device: (used.get(device, float("-inf")), device))
 
     @staticmethod
     def _tickets(conn):
@@ -866,6 +914,10 @@ class Broker:
         ).fetchone()
         result["binding"] = json.loads(wait["binding"]) if wait and wait["binding"] else None
         result["last_activity"] = wait["last_activity"] if wait else None
+        filters = conn.execute(
+            "SELECT model,api FROM broker_ticket_filters WHERE ticket_id=?", (ticket_id,)
+        ).fetchone()
+        result.update(dict(filters) if filters else {"model": None, "api": None})
         return result
 
     def _ticket_owned(self, conn, ticket_id, principal, agent_id, issue_id):
@@ -969,8 +1021,14 @@ class Broker:
                 )
             ):
                 return []
+        filters = conn.execute(
+            "SELECT model,api FROM broker_ticket_filters WHERE ticket_id=?", (ticket["ticket_id"],)
+        ).fetchone()
         return self._candidates(
-            ticket["pool"], ticket["device_id"], starting=self._starting_ticket(conn, ticket)
+            ticket["pool"],
+            ticket["device_id"],
+            starting=self._starting_ticket(conn, ticket),
+            **(dict(filters) if filters else {}),
         )
 
     def _claim(
@@ -1179,7 +1237,14 @@ class Broker:
             conflict = bool(blocked.intersection(candidates))
             blocked.update(candidates)
             free = (
-                [d for d in candidates if d not in occupied and d not in self._admission.blocked]
+                self._idle_order(
+                    conn,
+                    [
+                        d
+                        for d in candidates
+                        if d not in occupied and d not in self._admission.blocked
+                    ],
+                )
                 if not conflict
                 else []
             )
@@ -1231,6 +1296,14 @@ class Broker:
         ).fetchone()
         group["access_phase"] = access[0] if access else "work"
         group["startup"] = json.loads(access[1]) if access and access[1] else None
+        group["grants"] = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT device_id,agent_id,issue_id,run_id,reference,granted_at,expires_at "
+                "FROM broker_claim_grants WHERE lease_id=? ORDER BY device_id",
+                (lease_id,),
+            )
+        ]
         return group
 
     @staticmethod
@@ -1269,6 +1342,8 @@ class Broker:
         purpose,
         pool="rig",
         device_id=None,
+        model=None,
+        api=None,
         count=1,
         ttl=1800,
         idempotency_key,
@@ -1282,6 +1357,8 @@ class Broker:
             purpose=purpose,
             pool=pool,
             device_id=device_id,
+            model=model,
+            api=api,
             count=count,
             ttl=ttl,
             idempotency_key=idempotency_key,
@@ -1379,6 +1456,8 @@ class Broker:
         purpose,
         pool="rig",
         device_id=None,
+        model=None,
+        api=None,
         count=1,
         ttl=1800,
         idempotency_key,
@@ -1399,6 +1478,10 @@ class Broker:
                 raise Refused("invalid_request")
             if device_id is not None:
                 self._text(device_id)
+            if model is not None:
+                self._text(model)
+            if api is not None and (type(api) is not int or api < 1):
+                raise Refused("invalid_request")
             target = self._canonical(device_id) if device_id else None
             fingerprint = json.dumps(
                 [
@@ -1411,7 +1494,8 @@ class Broker:
                     agent_id,
                     issue_id,
                     binding,
-                ],
+                ]
+                + ([model, api] if model is not None or api is not None else []),
                 sort_keys=True,
             )
             self._expire(conn, now)
@@ -1452,16 +1536,22 @@ class Broker:
                     ticket=ticket,
                     holder=min(holders, key=lambda g: g["expires_at"]) if holders else None,
                 )
-            candidates = self._candidates(pool, target or device_id, starting=starting)
+            candidates = self._candidates(
+                pool, target or device_id, starting=starting, model=model, api=api
+            )
             if count > len(candidates):
                 raise Refused("impossible_batch")
             self._run_budget(conn, now, principal, run_id, pool)
             occupied = self._occupied(conn)
-            free = [
-                d
-                for d in candidates
-                if d not in occupied and (d not in self._admission.blocked or transfer is not None)
-            ]
+            free = self._idle_order(
+                conn,
+                [
+                    d
+                    for d in candidates
+                    if d not in occupied
+                    and (d not in self._admission.blocked or transfer is not None)
+                ],
+            )
             conflict = any(
                 set(candidates)
                 & (set(self._ticket_candidates(conn, t)) | set(json.loads(t["reserved"])))
@@ -1492,6 +1582,9 @@ class Broker:
                 conn.execute(
                     "INSERT INTO broker_ticket_wait VALUES (?,?,?,?)",
                     (ticket_id, purpose, now, json.dumps(binding, sort_keys=True)),
+                )
+                conn.execute(
+                    "INSERT INTO broker_ticket_filters VALUES (?,?,?)", (ticket_id, model, api)
                 )
                 if starting:
                     conn.execute("INSERT INTO broker_startup_tickets VALUES (?)", (ticket_id,))
@@ -1610,6 +1703,15 @@ class Broker:
         if set(devices) & self._admission.blocked and transfer is None:
             raise Refused("admission_unavailable")
         started, deadline = self._run_budget(conn, now, principal, run_id, pool)
+        expiry = min(now + ttl, deadline)
+        if not starting and self._admission.grants:
+            if any(device not in self._admission.grants for device in devices):
+                raise Refused("admission_unavailable")
+            expiry = min(
+                expiry, *(self._admission.grants[device]["expires_at"] for device in devices)
+            )
+            if expiry <= now:
+                raise Refused("admission_unavailable")
         lease_id = uuid.uuid4().hex
         conn.execute("INSERT INTO broker_context VALUES (?,?,?)", (lease_id, agent_id, issue_id))
         conn.execute(
@@ -1620,7 +1722,7 @@ class Broker:
                 run_id,
                 purpose,
                 started,
-                min(now + ttl, deadline),
+                expiry,
                 ttl,
                 deadline,
                 "active",
@@ -1641,6 +1743,22 @@ class Broker:
                 ),
             )
             self.boundary("acquire:device")
+            if device_id in self._admission.grants:
+                grant = self._admission.grants[device_id]
+                conn.execute(
+                    "INSERT INTO broker_claim_grants VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        lease_id,
+                        device_id,
+                        agent_id,
+                        issue_id,
+                        run_id,
+                        grant["reference"],
+                        now,
+                        grant["expires_at"],
+                    ),
+                )
+        self._used(conn, now, devices)
         conn.execute(
             "INSERT INTO broker_runs VALUES (?,?,?,?) ON CONFLICT(principal,run_id) "
             "DO UPDATE SET hard_deadline=excluded.hard_deadline",
@@ -1652,7 +1770,7 @@ class Broker:
                 lease_id,
                 json.dumps(binding, sort_keys=True),
                 self._mono,
-                self._mono + min(ttl, deadline - now),
+                self._mono + expiry - now,
             ),
         )
         conn.execute(

@@ -107,7 +107,7 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(self.ticket(batch)["reserved"], ["b"])
         self.assertEqual(self.ticket(later)["state"], "queued")
         self.free(holder)
-        self.assertEqual(self.ticket(batch)["reserved"], ["a", "b"])
+        self.assertEqual(self.ticket(batch)["reserved"], ["b", "a"])
         self.assertEqual(self.ticket(batch)["state"], "offered")
         self.assertEqual(self.ticket(later)["reserved"], [])
 

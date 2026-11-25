@@ -53,6 +53,12 @@ def smartqa_decide(value):
                     raise Refused("invalid_request")
                 if args["device_id"] is not None:
                     Broker._text(args["device_id"])
+                if args.get("model") is not None:
+                    Broker._text(args["model"])
+                if args.get("api") is not None and (
+                    type(args["api"]) is not int or args["api"] < 1
+                ):
+                    raise Refused("invalid_request")
         else:
             raise ValueError("unsupported snapshot operation")
 
@@ -84,6 +90,11 @@ def smartqa_decide(value):
                     args["issue_id"],
                     args["binding"],
                 ]
+                + (
+                    [args.get("model"), args.get("api")]
+                    if args.get("model") is not None or args.get("api") is not None
+                    else []
+                )
                 if op == "acquire"
                 else ["renew", args["lease_id"], args["ttl"]],
                 sort_keys=True,
@@ -155,6 +166,9 @@ def smartqa_decide(value):
                 endpoint = snapshot["admitted"].get(device.device_id)
                 if (
                     device.pool == args["pool"]
+                    and device.pool != "spare"
+                    and (args.get("model") is None or device.model == args["model"])
+                    and (args.get("api") is None or device.api == args["api"])
                     and endpoint
                     and registry.resolve(endpoint) == device
                     and registry.eligible(endpoint, "device")
@@ -178,6 +192,12 @@ def smartqa_decide(value):
             free = [
                 d for d in candidates if d not in occupied and d not in snapshot.get("blocked", [])
             ]
+            free.sort(
+                key=lambda device: (
+                    snapshot.get("device_usage", {}).get(device, float("-inf")),
+                    device,
+                )
+            )
             if len(free) < args["count"]:
                 ticket = dict(
                     ticket_id="generated",
@@ -197,6 +217,8 @@ def smartqa_decide(value):
                     missed_offers=0,
                     binding=args["binding"],
                     last_activity=now,
+                    model=args.get("model"),
+                    api=args.get("api"),
                 )
                 raise Refused(
                     "device_busy",
@@ -217,18 +239,36 @@ def smartqa_decide(value):
                 deadline = min(deadline, budget["hard_deadline"])
             if now >= deadline:
                 raise Refused("hard_cap")
+            selected = free[: args["count"]]
+            grants = [
+                dict(
+                    device_id=device,
+                    agent_id=args["agent_id"],
+                    issue_id=args["issue_id"],
+                    run_id=args["run_id"],
+                    reference=snapshot["grants"][device]["reference"],
+                    granted_at=now,
+                    expires_at=snapshot["grants"][device]["expires_at"],
+                )
+                for device in sorted(selected)
+                if device in snapshot.get("grants", {})
+            ]
+            expiry = min([now + args["ttl"], deadline] + [grant["expires_at"] for grant in grants])
+            if expiry <= now:
+                raise Refused("admission_unavailable")
             return dict(
                 binding=args["binding"],
                 holder=args["principal"],
                 run_id=args["run_id"],
                 purpose=args["purpose"],
                 started_at=started,
-                expires_at=min(now + args["ttl"], deadline),
+                expires_at=expiry,
                 ttl=args["ttl"],
                 hard_deadline=deadline,
                 state="active",
                 access_phase="work",
                 startup=None,
+                grants=grants,
                 recovery_owner=None,
                 ops_issue=None,
                 devices=[
@@ -258,7 +298,11 @@ def smartqa_decide(value):
             Broker._ttl(args["ttl"], 1800 if any(d.pool == "root" for d in devices) else 3600)
             if snapshot["conflicting_waiter"]:
                 raise Refused("conflicting_waiter")
-            group.update(ttl=args["ttl"], expires_at=min(now + args["ttl"], group["hard_deadline"]))
+            expiry = min(
+                [now + args["ttl"], group["hard_deadline"]]
+                + [grant["expires_at"] for grant in group.get("grants", [])]
+            )
+            group.update(ttl=args["ttl"], expires_at=expiry)
         elif op == "release" and group["state"] == "active":
             group["state"] = "fencing"
         elif op == "recovery":

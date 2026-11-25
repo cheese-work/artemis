@@ -1033,6 +1033,71 @@ Stopping the timer closes admission when source freshness expires. Run every
 20 seconds with a 60-second readiness age; serialize refreshes with the same
 flock. No lock or lease is held between timer invocations.
 
+### Standing rig pool and per-claim grants (CHE-9765)
+
+For standing rig approval, use `pool` instead of the legacy top-level
+`devices`, `reference` and `expires_at` fields. Mixing the two formats fails
+closed. Keep the actual writer and isolation lists from the owner census:
+
+```json
+{
+  "pool": {
+    "name": "rig",
+    "devices": ["CONFIRMED_UNRESTRICTED_RIG_SERIAL_1", "CONFIRMED_UNRESTRICTED_RIG_SERIAL_2"],
+    "reference": "CHE-9610 standing rig approval; CHE-9765"
+  },
+  "writers": [{"unit": "artemis-qa.service", "sdk_lock": "/path/to/artemis/runtime/device_lock.py"}],
+  "isolated_writers": []
+}
+```
+
+No global issue expiry is required for a standing pool. The existing freshness
+timer must still observe the configured phones and guarded writers: disconnected,
+offline or unauthorized phones are not ready. Readiness records carry a two-hour
+authority horizon; every claim records that original horizon and remains bounded
+by its own TTL and run cap. An optional `pool.expires_at` applies a fixed owner
+expiry instead. A later refresh cannot extend an existing claim's recorded
+authority. Removing a serial stops new admission on the next refresh; a current
+lease remains bounded by its recorded expiry and normal fencing/recovery.
+
+Each composed physical lease returns `grants[]` with canonical device, agent,
+issue, executor run, standing approval reference, grant time and authority expiry.
+These records are committed atomically with the lease, retained for audit, and
+available through `status`. Concurrent claims never rewrite the host pool file.
+The database change adds tables; existing leases, quarantine, claims and queue
+tickets remain in place, and old host configuration stays readable.
+
+Without `--device-id`, `acquire --pool rig` selects free eligible phones by
+longest idle time, using the last acquisition or verified release time. Never-used
+phones come first, with canonical id breaking ties. Historical leases provide an
+acquisition-time fallback when upgrading. `--model` matches the exact registered
+model string and `--api` the exact API level; both may be combined. `inventory`
+includes both fields. Filters persist with queued tickets and still apply when
+offering a phone to a successor run. An explicit canonical id or registered alias
+selects that phone, subject to any supplied filters. FIFO between conflicting
+tickets and all-or-none batches still apply; existing valid offers keep their
+reservations. Claimed, quarantined, fencing, cleaning and verifying devices are
+never granted. Redmi `500c592` and the `spare` pool remain unavailable.
+
+The reviewed source alone does not install or widen the live broker. The owner
+must install the exact reviewed head and record before/after source hashes. For
+CHE-9765, initially include S9 `271b67798f1c7ece` and A6 `5200679eb8f6653b`.
+Add A7 `52104549650ec311` only after the existing audited `recover-quarantine`
+and independent verified-release flow completes. S9 `2285349f38057ece`, A6
+`52005dc458d6550f` and A7 `521015a6fc12241f` may join when visible on USB
+(CHE-9766). Preserve existing writer/census ownership and use the existing
+guard during the host-file update. Never clear quarantine or reset shared ADB
+to make the pool appear available.
+
+After installation and refresh, retain `inventory` showing at least three
+eligible rig phones. Two independently admitted live executor runs on different
+issues must acquire and read back their own leases at the same time; record both
+lease ids, run ids, issues, serials and `grants[]`. Each executor then releases
+through the normal independent cleanup flow. Synthetic unit leases do not meet
+this live acceptance criterion. Rollback uses the saved source and legacy host
+config after draining/recovering current holders; preserve the database and
+audit history rather than restoring a database snapshot over new work.
+
 ### AVD phase grants and reload preview (CHE-6328)
 
 The physical `host-config` fields, fixed expiry and output rows do not change.

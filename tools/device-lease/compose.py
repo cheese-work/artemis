@@ -70,7 +70,7 @@ class FileGuard:
         return False
 
 
-def admitted_reader(path, max_age, registry=None, clock=time.time):
+def admitted_reader(path, max_age, registry=None, clock=time.time, *, with_grants=False):
     """Per-device readiness AND explicit grants; inventory is never permission.
 
     Invalid source records close admission. Valid but stale, revoked or restricted
@@ -95,7 +95,7 @@ def admitted_reader(path, max_age, registry=None, clock=time.time):
             or registry is None
         ):
             raise ValueError("invalid readiness source")
-        now, result, seen = number(clock()), {}, set()
+        now, result, seen, grants = number(clock()), {}, set(), {}
         for row in payload["devices"]:
             if not isinstance(row, dict) or set(row) != {
                 "device_id",
@@ -145,6 +145,11 @@ def admitted_reader(path, max_age, registry=None, clock=time.time):
                 and now < expiry
             ):
                 result[device.device_id] = row["endpoint"]
+                grants[device.device_id] = dict(grant)
+        if with_grants:
+            from registry import AdmissionSnapshot
+
+            return AdmissionSnapshot(result, grants)
         return result
 
     return read
@@ -487,7 +492,9 @@ def compose(config_path, registry, *, db_path=None, initialize=True):
             "startup_io": startup_io,
             "avd_grants": avd_grants,
             "admitted": {},
-            "admission_snapshot": admitted_reader(admitted_path, admitted_age, registry),
+            "admission_snapshot": admitted_reader(
+                admitted_path, admitted_age, registry, with_grants=True
+            ),
             "admission_sources": {"artemis": artemis_locks_reader(locks), "android": ledger.read},
             "admission_guard": guard,
             "recovery_io": recovery_io,
