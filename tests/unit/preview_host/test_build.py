@@ -228,6 +228,91 @@ def test_python_plan_refuses_source_only_package(preview_build, pydir):
         preview_build.acquire_python_plan(pydir, PROXY)
 
 
+def _lock_with_wheels(*filenames):
+    urls = ", ".join(
+        f'{{ url = "https://files.example/{name}", hash = "sha256:00" }}' for name in filenames
+    )
+    return PY_LOCK.replace(
+        'wheels = [{ url = "https://files.example/left_pad-1.2.3-py3-none-any.whl", hash = "sha256:00" }]',
+        f"wheels = [{urls}]",
+    )
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "cp311-cp311-manylinux_2_28_x86_64",
+        "cp313-cp313-manylinux_2_28_x86_64",
+        "cp312-cp312-manylinux_2_28_aarch64",
+        "cp312-cp312-musllinux_1_2_x86_64",
+        "cp312-cp312-macosx_11_0_arm64",
+        "cp312-cp312-win_amd64",
+        "cp312-cp312-manylinux_2_37_x86_64",
+        "cp312-cp313-manylinux_2_28_x86_64",
+        "cp313-abi3-manylinux_2_28_x86_64",
+        "py2-none-any",
+        "py313-none-any",
+    ],
+)
+def test_python_plan_refuses_wheels_that_do_not_fit_the_builder(preview_build, pydir, tag):
+    (pydir / "uv.lock").write_text(_lock_with_wheels(f"left_pad-1.2.3-{tag}.whl"))
+    with pytest.raises(ValueError, match=r"left-pad==1\.2\.3.*compatible wheel"):
+        preview_build.acquire_python_plan(pydir, PROXY)
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "py3-none-any",
+        "py2.py3-none-any",
+        "py312-none-any",
+        "cp312-cp312-manylinux_2_17_x86_64",
+        "cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64",
+        "cp39-abi3-manylinux2014_x86_64",
+        "cp312-none-manylinux_2_36_x86_64",
+        "py3-none-manylinux_2_5_x86_64",
+    ],
+)
+def test_python_plan_accepts_a_wheel_that_fits_the_builder(preview_build, pydir, tag):
+    (pydir / "uv.lock").write_text(
+        _lock_with_wheels("left_pad-1.2.3-cp311-cp311-win_amd64.whl", f"left_pad-1.2.3-{tag}.whl")
+    )
+    assert preview_build.acquire_python_plan(pydir, PROXY).commands
+
+
+WIN_ONLY = """
+[[package]]
+name = "winlib"
+version = "9"
+source = { registry = "https://pypi.org/simple" }
+wheels = [{ url = "https://files.example/winlib-9-cp312-cp312-win_amd64.whl", hash = "sha256:00" }]
+"""
+
+
+def test_python_plan_skips_a_windows_only_package_reached_only_by_marker(preview_build, pydir):
+    lock = _lock_with_wheels("left_pad-1.2.3-py3-none-any.whl").replace(
+        'source = { editable = "." }',
+        'source = { editable = "." }\ndependencies = [{ name = "winlib", marker = "sys_platform == \'win32\'" }]',
+    )
+    (pydir / "uv.lock").write_text(lock + WIN_ONLY)
+    assert preview_build.acquire_python_plan(pydir, PROXY).commands
+
+
+def test_python_plan_refuses_a_windows_only_package_reached_without_marker(preview_build, pydir):
+    lock = _lock_with_wheels("left_pad-1.2.3-py3-none-any.whl").replace(
+        'source = { editable = "." }',
+        'source = { editable = "." }\ndependencies = [{ name = "winlib" }]',
+    )
+    (pydir / "uv.lock").write_text(lock + WIN_ONLY)
+    with pytest.raises(ValueError, match=r"winlib==9.*compatible wheel"):
+        preview_build.acquire_python_plan(pydir, PROXY)
+
+
+def test_python_plan_accepts_the_checked_in_lock(preview_build):
+    root = Path(__file__).resolve().parents[3]
+    assert preview_build.acquire_python_plan(root, PROXY).commands
+
+
 @pytest.mark.parametrize("name", ["uv.lock", "pyproject.toml"])
 def test_python_plan_refuses_missing_metadata(preview_build, pydir, name):
     (pydir / name).unlink()

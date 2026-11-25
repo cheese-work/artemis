@@ -87,8 +87,9 @@ Same split: a networked acquisition, then a build with no network in any
    acquisition directory. Run on CPython 3.12, Linux x86_64 (pip evaluates
    requirement markers on the host; the wheels target the `python:3.12-slim`
    builder). Call `acquire_python_plan(work_dir, proxy_url)`. It hashes both
-   files, refuses a registry package that has no wheel in the lock (it names
-   the package and version), and returns `commands` and a replacement `env`
+   files, refuses a registry package that has no wheel in the lock or none
+   whose tags fit CPython 3.12 on glibc x86_64 (it names the package and
+   version), and returns `commands` and a replacement `env`
    (proxy only, `PIP_CONFIG_FILE` set to the null device). Run the commands in
    `plan.cwd`, in order:
    `uv export --frozen --offline --no-config --no-dev --no-emit-project
@@ -99,7 +100,10 @@ Same split: a networked acquisition, then a build with no network in any
    for both files, with `--python-version 3.12 --abi cp312` and one
    `--platform` per glibc tag up to 2.36 plus the legacy manylinux aliases
    (pip does not expand them). A package with no wheel for the builder fails
-   here; there is no fallback to a source build.
+   here; there is no fallback to a source build. One exception: a package
+   with no Linux wheel that only marker-conditioned dependencies reach (for
+   example `pywin32` on `sys_platform == 'win32'`) is skipped by the plan;
+   `pip download` skips it by marker, or fails if the marker holds.
 2. **Stage and verify.** `stage_python_manifest(work_dir, plan, pip_version)`
    records the SHA256 of `pyproject.toml`, `uv.lock`, both requirement files,
    the wheelhouse tree (files and modes) and the pip version used. It refuses

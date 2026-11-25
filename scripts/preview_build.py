@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import tomllib
 from typing import TypedDict
@@ -196,6 +197,31 @@ def _proxy(proxy_url: str) -> None:
         raise ValueError("acquisition requires an HTTP(S) proxy URL")
 
 
+PYTHON_PLATFORM_TAGS = frozenset(PYTHON_PLATFORMS[1::2]) | {"any"}
+
+
+def _wheel_fits_builder(filename: str) -> bool:
+    """True if a wheel filename has a tag pip would accept for CPython 3.12 on glibc x86_64."""
+    try:
+        python, abi, platform = filename.removesuffix(".whl").rsplit("-", 3)[-3:]
+    except ValueError:
+        return False
+    if not set(platform.split(".")) & PYTHON_PLATFORM_TAGS:
+        return False
+    for tag in python.split("."):
+        match = re.fullmatch(r"(py|cp)3(\d*)", tag)
+        if not match:
+            continue
+        minor = int(match[2] or 0)
+        if tag == "cp312" and "cp312" in abi.split("."):
+            return True
+        if minor <= 12 and (
+            "none" in abi.split(".") or (match[1] == "cp" and "abi3" in abi.split(".") and minor)
+        ):
+            return True
+    return False
+
+
 def acquire_python_plan(work_dir: Path, proxy_url: str) -> PythonAcquisitionPlan:
     """Hash the lock metadata and return the wheel-only acquisition commands, without running them.
 
@@ -210,11 +236,36 @@ def acquire_python_plan(work_dir: Path, proxy_url: str) -> PythonAcquisitionPlan
         packages = tomllib.loads(lock_bytes.decode())["package"]
     except (KeyError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ValueError("uv.lock must be readable TOML with packages") from error
+    edges = [
+        (dep["name"], "marker" in dep)
+        for package in packages
+        for dep in (
+            *package.get("dependencies", []),
+            *(d for group in package.get("optional-dependencies", {}).values() for d in group),
+            *(d for group in package.get("dev-dependencies", {}).values() for d in group),
+        )
+    ]
+    marker_gated = {
+        name
+        for name in {name for name, _ in edges}
+        if all(gated for target, gated in edges if target == name)
+    }
     for package in packages:
-        if "registry" in package.get("source", {}) and not package.get("wheels"):
+        if "registry" not in package.get("source", {}):
+            continue
+        urls = [str(wheel.get("url", "")) for wheel in package.get("wheels", [])]
+        if not urls:
             raise ValueError(
                 f"{package['name']}=={package['version']} has no binary wheel; "
                 "preview builds do not compile source distributions"
+            )
+        names = [url.rsplit("/", 1)[-1] for url in urls]
+        if not any(_wheel_fits_builder(name) for name in names):
+            if package["name"] in marker_gated and not any("linux" in name for name in names):
+                continue  # e.g. pywin32: pip skips it on Linux by marker, and the download is binary-only
+            raise ValueError(
+                f"{package['name']}=={package['version']} has no compatible wheel for "
+                "CPython 3.12 on glibc x86_64; preview builds do not compile source distributions"
             )
     out = PYTHON_INPUTS
     download = (
