@@ -1,0 +1,8 @@
+# Build requirements for the two local projects in the offline preview build.
+# Hash-locked for CPython 3.12 on Linux x86_64 (python:3.12-slim). Refresh with
+# `pip download --only-binary=:all:` plus `pip hash`; review the diff by hand.
+setuptools==84.2.1 \
+    --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2
+cython==3.3.2 \
+    --hash=sha256:15aec2b43368e9781a80e7e52ff470ffda8d93e1f115a47467b14fe189af1536 \
+    --hash=sha256:93ebae3f7d1cd0ce5e49cdc8df2e83c54596fe2f1971767738efb78f43e4032b

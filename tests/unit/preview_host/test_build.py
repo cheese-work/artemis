@@ -141,6 +141,183 @@ def test_staging_rejects_escaping_symlink(preview_build, tmp_path, app):
         preview_build.stage_manifest(tmp_path, plan, "10.9.9")
 
 
+PY_LOCK = """version = 1
+[[package]]
+name = "left-pad"
+version = "1.2.3"
+source = { registry = "https://pypi.org/simple" }
+wheels = [{ url = "https://files.example/left_pad-1.2.3-py3-none-any.whl", hash = "sha256:00" }]
+
+[[package]]
+name = "artemis"
+version = "1.0"
+source = { editable = "." }
+"""
+
+
+@pytest.fixture
+def pydir(tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n')
+    (tmp_path / "uv.lock").write_text(PY_LOCK)
+    inputs = tmp_path / "python-inputs"
+    (inputs / "wheelhouse").mkdir(parents=True)
+    (inputs / "requirements.txt").write_text("left-pad==1.2.3 --hash=sha256:00\n")
+    from scripts import preview_build
+
+    shutil.copy(preview_build.BUILD_REQUIREMENTS, inputs / "build-requirements.txt")
+    (inputs / "wheelhouse/left_pad-1.2.3-py3-none-any.whl").write_bytes(b"wheel")
+    return tmp_path
+
+
+def test_python_plan_exports_locked_hashes_and_downloads_binary_only(preview_build, pydir):
+    plan = preview_build.acquire_python_plan(pydir, PROXY)
+    export, copy_build, runtime, build = plan.commands[1:]
+    assert plan.commands[0] == ("mkdir", "-p", "python-inputs/wheelhouse")
+    assert export == (
+        "uv", "export", "--frozen", "--offline", "--no-config", "--no-dev",
+        "--no-emit-project", "--no-emit-workspace", "--format", "requirements-txt",
+        "--output-file", "python-inputs/requirements.txt",
+    )  # fmt: skip
+    assert copy_build[:2] == ("cp", str(preview_build.BUILD_REQUIREMENTS))
+    for download, source in ((runtime, "requirements"), (build, "build-requirements")):
+        assert download[:3] == ("pip", "download", "--require-hashes")
+        assert {"--only-binary=:all:", "--no-deps"} <= set(download)
+        platforms = [download[i + 1] for i, arg in enumerate(download) if arg == "--platform"]
+        assert platforms == [
+            *(f"manylinux_2_{n}_x86_64" for n in range(36, 4, -1)),
+            "manylinux2014_x86_64",
+            "manylinux2010_x86_64",
+            "manylinux1_x86_64",
+        ]
+        assert download[download.index("--abi") + 1] == "cp312"
+        assert download[download.index("--python-version") + 1] == "3.12"
+        assert download[-2:] == ("-r", f"python-inputs/{source}.txt")
+    assert plan.cwd == pydir
+    assert plan.env == {
+        "HTTPS_PROXY": PROXY,
+        "PIP_CONFIG_FILE": os.devnull,
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+    }
+    assert plan.pyproject_sha256 == sha256((pydir / "pyproject.toml").read_bytes()).hexdigest()
+    assert plan.uv_lock_sha256 == sha256((pydir / "uv.lock").read_bytes()).hexdigest()
+    assert (
+        plan.build_requirements_sha256
+        == sha256(preview_build.BUILD_REQUIREMENTS.read_bytes()).hexdigest()
+    )
+
+
+def test_build_requirements_are_pinned_and_hashed(preview_build):
+    text = preview_build.BUILD_REQUIREMENTS.read_text().replace("\\\n", " ")
+    lines = [line for line in text.splitlines() if line and not line.startswith("#")]
+    assert {line.split("==")[0] for line in lines} == {"setuptools", "cython"}
+    for line in lines:
+        assert re.fullmatch(
+            r"[\w.-]+==[\w.]+( --hash=sha256:[a-f0-9]{64})+", re.sub(r"\s+", " ", line)
+        )
+
+
+def test_python_plan_refuses_source_only_package(preview_build, pydir):
+    (pydir / "uv.lock").write_text(
+        PY_LOCK.replace(
+            'wheels = [{ url = "https://files.example/left_pad-1.2.3-py3-none-any.whl", hash = "sha256:00" }]',
+            'sdist = { url = "https://files.example/left_pad-1.2.3.tar.gz", hash = "sha256:00" }',
+        )
+    )
+    with pytest.raises(ValueError, match=r"left-pad==1\.2\.3.*binary wheel"):
+        preview_build.acquire_python_plan(pydir, PROXY)
+
+
+@pytest.mark.parametrize("name", ["uv.lock", "pyproject.toml"])
+def test_python_plan_refuses_missing_metadata(preview_build, pydir, name):
+    (pydir / name).unlink()
+    with pytest.raises(OSError):
+        preview_build.acquire_python_plan(pydir, PROXY)
+
+
+def test_python_plan_refuses_non_http_proxy(preview_build, pydir):
+    with pytest.raises(ValueError, match="proxy"):
+        preview_build.acquire_python_plan(pydir, "socks5://127.0.0.1:1")
+
+
+def test_python_manifest_round_trip(preview_build, pydir):
+    plan = preview_build.acquire_python_plan(pydir, PROXY)
+    manifest = preview_build.stage_python_manifest(pydir, plan, "24.0")
+    assert manifest["pip_version"] == "24.0"
+    assert manifest["uv_lock_sha256"] == plan.uv_lock_sha256
+    assert re.fullmatch(r"[a-f0-9]{64}", manifest["wheelhouse_sha256"])
+    preview_build.verify_python_staged(pydir, json.loads(json.dumps(manifest)))
+
+
+def test_python_stage_refuses_lock_changed_after_planning(preview_build, pydir):
+    plan = preview_build.acquire_python_plan(pydir, PROXY)
+    (pydir / "uv.lock").write_text(PY_LOCK + "\n")
+    with pytest.raises(ValueError, match="input metadata changed"):
+        preview_build.stage_python_manifest(pydir, plan, "24.0")
+
+
+def test_python_stage_refuses_empty_wheelhouse(preview_build, pydir):
+    plan = preview_build.acquire_python_plan(pydir, PROXY)
+    (pydir / "python-inputs/wheelhouse/left_pad-1.2.3-py3-none-any.whl").unlink()
+    with pytest.raises(ValueError, match="no wheels"):
+        preview_build.stage_python_manifest(pydir, plan, "24.0")
+
+
+@pytest.mark.parametrize(
+    "tamper", ["change-wheel", "remove-wheel", "add-wheel", "change-requirements"]
+)
+def test_python_verify_refuses_tampered_inputs(preview_build, pydir, tamper):
+    plan = preview_build.acquire_python_plan(pydir, PROXY)
+    manifest = preview_build.stage_python_manifest(pydir, plan, "24.0")
+    inputs = pydir / "python-inputs"
+    wheel = inputs / "wheelhouse/left_pad-1.2.3-py3-none-any.whl"
+    if tamper == "change-wheel":
+        wheel.write_bytes(b"other")
+    elif tamper == "remove-wheel":
+        wheel.unlink()
+    elif tamper == "add-wheel":
+        (inputs / "wheelhouse/extra-1-py3-none-any.whl").write_bytes(b"x")
+    else:
+        (inputs / "requirements.txt").write_text("evil==1 --hash=sha256:00\n")
+    with pytest.raises(ValueError, match="staged input differs"):
+        preview_build.verify_python_staged(pydir, manifest)
+
+
+def test_python_verify_refuses_invalid_manifest(preview_build, pydir):
+    plan = preview_build.acquire_python_plan(pydir, PROXY)
+    manifest = preview_build.stage_python_manifest(pydir, plan, "24.0")
+    with pytest.raises(ValueError, match="pip version"):
+        preview_build.verify_python_staged(pydir, {**manifest, "pip_version": " "})
+
+
+def test_preview_installs_python_only_from_the_verified_wheelhouse():
+    stages = _stages()
+    assert (
+        stages["preview-python-inputs"].split(b"\n")[0] == b"FROM scratch AS preview-python-inputs"
+    )
+    reachable = _reachable(stages, "preview")
+    assert {"preview-python-inputs", "preview-wheel-builder"} <= reachable
+    wheel_runs = re.sub(r"\\\n\s*", " ", stages["preview-wheel-builder"].decode())
+    for project in ("./packages/artemis-client", "."):
+        assert re.search(
+            rf"^RUN --network=none .*pip wheel --no-cache-dir --no-index --find-links \S+ "
+            rf"--no-build-isolation --no-deps --wheel-dir /wheels {re.escape(project)}(?: +&&|$)",
+            wheel_runs,
+            re.M,
+        ), project
+    assert "pip install --no-cache-dir --no-index --require-hashes" in wheel_runs
+    preview = re.sub(r"\\\n\s*", " ", stages["preview"].decode())
+    assert re.search(
+        r"^RUN --network=none .*from=preview-python-inputs.* pip install .*--no-index --require-hashes .*-r \S*requirements\.txt",
+        preview,
+        re.M,
+    )
+    assert re.search(
+        r"pip install .*--no-index --no-deps /wheels/artemis_client-\S+\.whl /wheels/artemis-\S+\.whl",
+        preview,
+    )
+
+
 def _stages() -> dict[str, bytes]:
     source = (ROOT / "Dockerfile").read_bytes()
     starts = list(re.finditer(rb"^FROM\s+\S+(?:\s+AS\s+(\S+))?$", source, re.M))

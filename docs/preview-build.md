@@ -1,11 +1,12 @@
-# Offline preview build: Node inputs
+# Offline preview build: Node and Python inputs
 
 The preview controller separates networked acquisition from offline hook
 execution. This stage delivers the showcase UI build, not a runnable preview:
 `--target preview` keeps its non-root user (UID/GID 10001),
-`ARTEMIS_PREVIEW_PROFILE=1` and Uvicorn command, but does not yet install
-Python dependencies or system libraries. Do not activate this target until
-the Python wheelhouse and app-start proof land. The live console remains the
+`ARTEMIS_PREVIEW_PROFILE=1` and Uvicorn command. It installs the Python app
+and its locked dependencies from a hash-locked wheelhouse (see "Python
+inputs"), but no system libraries yet. Do not activate this target until
+the app-start proof lands. The live console remains the
 default target and its Dockerfile stages are unchanged.
 
 ## 1. Acquire without running hooks
@@ -75,6 +76,48 @@ console keeps its fonts. A hook that requires network access fails the build.
 The preview image gets the resulting `/app/apps/showcase_ui/dist/` only from
 the offline frontend stage. Base-image import and Python installation are
 separate from this stage.
+
+## Python inputs
+
+Same split: a networked acquisition, then a build with no network in any
+`RUN`. The `preview-python-inputs` named context holds `requirements.txt`,
+`build-requirements.txt` and `wheelhouse/`.
+
+1. **Acquire.** Copy only `pyproject.toml` and `uv.lock` into a fresh
+   acquisition directory. Run on CPython 3.12, Linux x86_64 (pip evaluates
+   requirement markers on the host; the wheels target the `python:3.12-slim`
+   builder). Call `acquire_python_plan(work_dir, proxy_url)`. It hashes both
+   files, refuses a registry package that has no wheel in the lock (it names
+   the package and version), and returns `commands` and a replacement `env`
+   (proxy only, `PIP_CONFIG_FILE` set to the null device). Run the commands in
+   `plan.cwd`, in order:
+   `uv export --frozen --offline --no-config --no-dev --no-emit-project
+   --no-emit-workspace --format requirements-txt` (runtime dependencies with
+   hashes); a copy of `scripts/preview_build_requirements.txt` (hash-locked
+   `setuptools` and `cython`, the build requirements of the two local
+   projects); then `pip download --require-hashes --only-binary=:all: --no-deps`
+   for both files, with `--python-version 3.12 --abi cp312` and one
+   `--platform` per glibc tag up to 2.36 plus the legacy manylinux aliases
+   (pip does not expand them). A package with no wheel for the builder fails
+   here; there is no fallback to a source build.
+2. **Stage and verify.** `stage_python_manifest(work_dir, plan, pip_version)`
+   records the SHA256 of `pyproject.toml`, `uv.lock`, both requirement files,
+   the wheelhouse tree (files and modes) and the pip version used. It refuses
+   changed metadata and an empty wheelhouse. Keep the record in controller
+   custody. `verify_python_staged(work_dir, manifest)` runs immediately
+   before BuildKit; a changed, added or missing wheel or requirements file
+   stops the build.
+3. **Build offline.** Add `--build-context
+   preview-python-inputs=<work_dir>/python-inputs` to the command above. The
+   `preview-wheel-builder` stage installs the build requirements, then runs
+   `pip wheel --no-index --no-build-isolation --no-deps` for
+   `./packages/artemis-client` and `.`. The `preview` stage installs
+   `requirements.txt` with `--no-index --require-hashes`, then the two local
+   wheels with `--no-index --no-deps`. The live console stages are unchanged.
+
+Known gap for the app-start proof: system libraries are absent (for example
+`import cv2` needs `libxcb.so.1`), and the app writes `/app/traces` as UID
+10001. Neither is handled here.
 
 ## Checks
 

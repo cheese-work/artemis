@@ -1,4 +1,4 @@
-"""Plan hook-free Node acquisition and verify staged preview build inputs."""
+"""Plan hook-free Node and wheel-only Python acquisition; verify staged preview build inputs."""
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import tomllib
 from typing import TypedDict
 from urllib.parse import urlsplit
 
@@ -25,6 +26,41 @@ class NodeStageManifest(TypedDict):
     lockfile_sha256: str
     node_modules_sha256: str
     npm_version: str
+
+
+BUILD_REQUIREMENTS = Path(__file__).with_name("preview_build_requirements.txt")
+PYTHON_INPUTS = "python-inputs"
+# pip does not expand a manylinux platform to older tags: list every glibc up to bookworm's
+# 2.36, plus the legacy aliases (wheels such as adbutils still ship manylinux1).
+PYTHON_PLATFORMS = tuple(
+    arg
+    for name in (
+        *(f"manylinux_2_{n}_x86_64" for n in range(36, 4, -1)),
+        "manylinux2014_x86_64",
+        "manylinux2010_x86_64",
+        "manylinux1_x86_64",
+    )
+    for arg in ("--platform", name)
+)
+
+
+@dataclass(frozen=True)
+class PythonAcquisitionPlan:
+    commands: tuple[tuple[str, ...], ...]
+    cwd: Path
+    env: dict[str, str]
+    pyproject_sha256: str
+    uv_lock_sha256: str
+    build_requirements_sha256: str
+
+
+class PythonStageManifest(TypedDict):
+    pyproject_sha256: str
+    uv_lock_sha256: str
+    requirements_sha256: str
+    build_requirements_sha256: str
+    wheelhouse_sha256: str
+    pip_version: str
 
 
 def _directory(path: Path) -> Path:
@@ -101,9 +137,9 @@ def _tree_sha256(root: Path) -> str:
                     strict=True
                 ).is_relative_to(root)
             except (OSError, RuntimeError) as error:
-                raise ValueError(f"invalid node_modules symlink: {relative}") from error
+                raise ValueError(f"invalid symlink: {relative}") from error
             if not within_tree:
-                raise ValueError(f"escaping node_modules symlink: {relative}")
+                raise ValueError(f"escaping symlink: {relative}")
             payload = os.fsencode(target)
             kind, size, content_hash = "symlink", len(payload), hashlib.sha256(payload).hexdigest()
         elif stat.S_ISREG(mode):
@@ -111,7 +147,7 @@ def _tree_sha256(root: Path) -> str:
         elif stat.S_ISDIR(mode):
             kind, size, content_hash = "directory", 0, None
         else:
-            raise ValueError(f"unsupported node_modules entry: {relative}")
+            raise ValueError(f"unsupported entry: {relative}")
         row = (relative, kind, stat.S_IMODE(mode), size, content_hash)
         digest.update(json.dumps(row, separators=(",", ":")).encode("ascii") + b"\n")
     return digest.hexdigest()
@@ -152,3 +188,113 @@ def verify_staged(work_dir: Path, manifest: Mapping[str, object]) -> None:
         raise ValueError("staged input differs: unable to verify files") from error
     if observed != manifest:
         raise ValueError("staged input differs from the Node manifest")
+
+
+def _proxy(proxy_url: str) -> None:
+    proxy = urlsplit(proxy_url)
+    if proxy.scheme not in {"http", "https"} or not proxy.hostname:
+        raise ValueError("acquisition requires an HTTP(S) proxy URL")
+
+
+def acquire_python_plan(work_dir: Path, proxy_url: str) -> PythonAcquisitionPlan:
+    """Hash the lock metadata and return the wheel-only acquisition commands, without running them.
+
+    The controller must run them on CPython 3.12, Linux x86_64: pip evaluates requirement
+    markers on the host, and the wheels target the python:3.12-slim builder (glibc 2.36).
+    """
+    _proxy(proxy_url)
+    work_dir = _directory(work_dir)
+    pyproject = _sha256(work_dir / "pyproject.toml")
+    lock_bytes = _regular_file(work_dir / "uv.lock").read_bytes()
+    try:
+        packages = tomllib.loads(lock_bytes.decode())["package"]
+    except (KeyError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise ValueError("uv.lock must be readable TOML with packages") from error
+    for package in packages:
+        if "registry" in package.get("source", {}) and not package.get("wheels"):
+            raise ValueError(
+                f"{package['name']}=={package['version']} has no binary wheel; "
+                "preview builds do not compile source distributions"
+            )
+    out = PYTHON_INPUTS
+    download = (
+        "pip", "download", "--require-hashes", "--only-binary=:all:", "--no-deps",
+        "--python-version", "3.12", "--implementation", "cp", "--abi", "cp312",
+        "--dest", f"{out}/wheelhouse", *PYTHON_PLATFORMS,
+    )  # fmt: skip
+    return PythonAcquisitionPlan(
+        commands=(
+            ("mkdir", "-p", f"{out}/wheelhouse"),
+            (
+                "uv",
+                "export",
+                "--frozen",
+                "--offline",
+                "--no-config",
+                "--no-dev",
+                "--no-emit-project",
+                "--no-emit-workspace",
+                "--format",
+                "requirements-txt",
+                "--output-file",
+                f"{out}/requirements.txt",
+            ),  # fmt: skip
+            ("cp", str(BUILD_REQUIREMENTS), f"{out}/build-requirements.txt"),
+            (*download, "-r", f"{out}/requirements.txt"),
+            (*download, "-r", f"{out}/build-requirements.txt"),
+        ),
+        cwd=work_dir,
+        env={
+            "HTTPS_PROXY": proxy_url,
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+        },
+        pyproject_sha256=pyproject,
+        uv_lock_sha256=hashlib.sha256(lock_bytes).hexdigest(),
+        build_requirements_sha256=_sha256(BUILD_REQUIREMENTS),
+    )
+
+
+def _python_manifest(work_dir: Path, pip_version: str) -> PythonStageManifest:
+    inputs = _directory(_directory(work_dir) / PYTHON_INPUTS)
+    wheelhouse = _directory(inputs / "wheelhouse")
+    if not any(path.name.endswith(".whl") for path in wheelhouse.iterdir()):
+        raise ValueError("wheelhouse has no wheels")
+    return {
+        "pyproject_sha256": _sha256(work_dir / "pyproject.toml"),
+        "uv_lock_sha256": _sha256(work_dir / "uv.lock"),
+        "requirements_sha256": _sha256(inputs / "requirements.txt"),
+        "build_requirements_sha256": _sha256(inputs / "build-requirements.txt"),
+        "wheelhouse_sha256": _tree_sha256(wheelhouse),
+        "pip_version": pip_version,
+    }
+
+
+def stage_python_manifest(
+    work_dir: Path, plan: PythonAcquisitionPlan, pip_version: str
+) -> PythonStageManifest:
+    """Seal the wheelhouse against the metadata observed before acquisition."""
+    if not pip_version or pip_version != pip_version.strip():
+        raise ValueError("expected the pip version used for acquisition")
+    manifest = _python_manifest(work_dir, pip_version)
+    if (
+        manifest["pyproject_sha256"] != plan.pyproject_sha256
+        or manifest["uv_lock_sha256"] != plan.uv_lock_sha256
+        or manifest["build_requirements_sha256"] != plan.build_requirements_sha256
+    ):
+        raise ValueError("Python input metadata changed after acquisition was planned")
+    return manifest
+
+
+def verify_python_staged(work_dir: Path, manifest: Mapping[str, object]) -> None:
+    """Fail before starting BuildKit if the wheelhouse or requirements differ from the record."""
+    pip_version = manifest.get("pip_version")
+    if not isinstance(pip_version, str) or not pip_version or pip_version != pip_version.strip():
+        raise ValueError("invalid staged input manifest: pip version")
+    try:
+        observed = _python_manifest(work_dir, pip_version)
+    except (OSError, ValueError) as error:
+        raise ValueError("staged input differs: unable to verify files") from error
+    if observed != manifest:
+        raise ValueError("staged input differs from the Python manifest")
