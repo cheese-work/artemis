@@ -34,6 +34,7 @@ from pathlib import Path
 import re
 import sqlite3
 import time
+from typing import Any
 
 from artemis.data_engine import schema_revisions
 
@@ -401,6 +402,46 @@ def substring_clause(terms: list[str], *, snapshots: bool = True) -> tuple[str, 
         f"(s.initial_goal LIKE ? ESCAPE '\\' OR ({meta_text}) LIKE ? ESCAPE '\\')" for _ in terms
     )
     return clause, [p for t in terms for p in (like_pattern(t),) * 2]
+
+
+_SNIPPET_RADIUS = 40
+
+
+def search_snippet(run: dict[str, Any], text: str) -> dict[str, str] | None:
+    """Which field of an already-visible ``run`` matched ``text``, with the matched text.
+
+    Built from the run as the API presents it (after the visibility join and redaction),
+    never from the index, so it cannot expose a hidden run or unredacted goal text.
+    Fields are tried in search priority order; the first one holding any term wins.
+    """
+    terms = [t.casefold() for t in _TERM.findall(text)][:_MAX_TERMS]
+    device = run.get("device_ref")
+    fields = (
+        ("prompt", run.get("prompt")),
+        ("device", device.get("serial") if isinstance(device, dict) else None),
+        ("device_model", run.get("device_model")),
+        ("status", run.get("status")),
+        ("review", run.get("review")),
+        ("app_build", run.get("app_build")),
+        ("agent_model", run.get("agent_model")),
+        ("suite_version", run.get("suite_version")),
+        ("requested_by", run.get("requested_by")),
+        ("host_id", run.get("host_id")),
+    )
+    for name, value in fields:
+        if not isinstance(value, str):
+            continue
+        hits = [i for t in terms if (i := value.casefold().find(t)) >= 0]
+        if hits:
+            start = max(0, min(hits) - _SNIPPET_RADIUS)
+            end = min(len(value), min(hits) + _SNIPPET_RADIUS)
+            return {
+                "field": name,
+                "text": ("…" if start else "")
+                + value[start:end]
+                + ("…" if end < len(value) else ""),
+            }
+    return None
 
 
 def search_session_ids(conn: sqlite3.Connection, text: str) -> list[str]:

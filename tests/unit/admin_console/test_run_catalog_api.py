@@ -240,6 +240,94 @@ async def test_search_matches_snapshot_terms_only_on_visible_live_runs(
         assert page["warnings"] == (["search_fallback_substring"] if fallback else [])
 
 
+def _force_substring_mode(db, monkeypatch) -> None:
+    from artemis.data_engine import run_catalog
+
+    with sqlite3.connect(db) as conn:
+        for trigger in run_catalog._TRIGGERS_FTS:
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute("DROP TABLE runs_fts")
+    monkeypatch.setattr(run_catalog, "fts5_available", lambda conn: False)
+    run_catalog.migrate(db)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback", [False, True])
+async def test_search_returns_a_snippet_naming_the_matched_field(
+    library, qa, monkeypatch, fallback
+):
+    if fallback:
+        _force_substring_mode(library.db, monkeypatch)
+    by_goal = _seed(library.db, "open the Wifi settings", start=3.0)
+    by_model = _seed(library.db, "unrelated", start=2.0)
+    by_build = _seed(library.db, "unrelated", start=1.0)
+    _meta(library.db, by_goal, requested_by="qa@example.com")
+    _meta(library.db, by_model, requested_by="qa@example.com", device_model="Pixel 9 Pro")
+    _meta(library.db, by_build, requested_by="qa@example.com", app_build="canary-42")
+
+    async def snippet(term):
+        runs = (await qa.get("/api/runs", params={"q": term, "scope": "mine"})).json()["runs"]
+        assert len(runs) == 1, term
+        return runs[0]["snippet"]
+
+    assert await snippet("wifi") == {"field": "prompt", "text": "open the Wifi settings"}
+    assert await snippet("pixel") == {"field": "device_model", "text": "Pixel 9 Pro"}
+    assert await snippet("canary") == {"field": "app_build", "text": "canary-42"}
+
+
+@pytest.mark.asyncio
+async def test_snippet_prefers_the_goal_and_is_windowed_on_a_long_goal(library, qa):
+    goal = "start " * 60 + "needle " + "end " * 60
+    sid = _seed(library.db, goal)
+    _meta(library.db, sid, requested_by="qa@example.com", agent_model="needle-model")
+
+    run = (await qa.get("/api/runs", params={"q": "needle", "scope": "mine"})).json()["runs"][0]
+
+    assert run["snippet"]["field"] == "prompt"
+    assert "needle" in run["snippet"]["text"] and len(run["snippet"]["text"]) < 160
+
+
+@pytest.mark.asyncio
+async def test_no_snippet_without_a_search(library, qa):
+    _meta(library.db, _seed(library.db, "plain"), requested_by="qa@example.com")
+
+    run = (await qa.get("/api/runs", params={"scope": "mine"})).json()["runs"][0]
+
+    assert "snippet" not in run
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback", [False, True])
+async def test_a_hidden_or_removed_run_never_yields_a_snippet(library, qa, monkeypatch, fallback):
+    if fallback:
+        _force_substring_mode(library.db, monkeypatch)
+    visible = _seed(library.db, "zebra visible")
+    hidden = _seed(library.db, "zebra hidden-secret")
+    deleted = _seed(library.db, "zebra removed-secret")
+    _meta(library.db, visible, requested_by="qa@example.com")
+    _meta(library.db, hidden, requested_by="qa2@example.com")
+    _meta(library.db, deleted, requested_by="qa@example.com", deleted_at=1)
+
+    response = await qa.get("/api/runs", params={"q": "zebra", "scope": "mine"})
+
+    assert [r["session_id"] for r in response.json()["runs"]] == [visible]
+    assert "secret" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_snippet_of_a_read_only_run_is_redacted_like_its_prompt(library, qa):
+    _meta(
+        library.db,
+        _seed(library.db, "use key sk-abcdefghijklmnop1234 zebra"),
+        requested_by="qa@example.com",
+    )
+
+    response = await qa.get("/api/runs", params={"q": "zebra", "scope": "everyone"})
+
+    assert "sk-abcdefghijklmnop1234" not in response.text
+    assert response.json()["runs"][0]["snippet"]["field"] == "prompt"
+
+
 @pytest.mark.asyncio
 async def test_fts_pages_goal_matches_before_metadata_even_without_start_time(env):
     older_tie = _seed(env, "needle " + "long goal " * 50, start=10)

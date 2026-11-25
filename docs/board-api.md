@@ -323,7 +323,15 @@ ranked search with the same query and filters; if the cursor run is no longer
 visible or no longer matches, the API returns `400 invalid_cursor`. Restart at
 the first page. Searching for `completed` also finds runs stored as `success`.
 
-Snippets are built after the visibility join. Unknown historical values stay
+With `q`, each run in the response carries `snippet`: `{"field", "text"}`, or `null`
+when no displayed field holds a query term. `field` is the first of `prompt`,
+`device`, `device_model`, `status`, `review`, `app_build`, `agent_model`,
+`suite_version`, `requested_by`, `host_id` that contains a term (case-insensitive),
+and `text` is that value, cut to about 40 characters either side of the match
+with `…` at a cut. Without `q` the key is absent. Snippets are built after the
+visibility join, from the run as presented (goal text already redacted for
+read-only viewers), so a snippet never leaks a hidden or removed run. They work
+in FTS and substring-fallback mode alike. Unknown historical values stay
 `null` and contribute no search text. Without FTS5, search matches substrings
 in the same fields, keeps newest-first order, and returns the existing
 `search_fallback_substring` warning.
