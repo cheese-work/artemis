@@ -1447,6 +1447,7 @@ class TaskQueueService:
         True once an assignment exists, so the caller stops it when the run ends.
         """
         from apps.admin_console.database.repositories.run_catalog_repository import (
+            CatalogNotReady,
             run_catalog_repo,
         )
 
@@ -1465,7 +1466,7 @@ class TaskQueueService:
             run_catalog_repo.set_recording_state(
                 sess_id, recording_id, capture="recording" if ready else "missing:not_ready"
             )
-        except Exception:
+        except (sqlite3.Error, OSError, ValueError, CatalogNotReady):
             logger.exception("event=recorder_wait_failed session_id=%s", sess_id)
         return recording_id is not None
 
@@ -1473,7 +1474,7 @@ class TaskQueueService:
     def _stop_recording(cls, sess_id: str) -> None:
         try:
             cls._recording_store().request_stop(sess_id)
-        except Exception:
+        except (sqlite3.Error, OSError):
             logger.exception("event=recorder_stop_failed session_id=%s", sess_id)
 
     @classmethod
