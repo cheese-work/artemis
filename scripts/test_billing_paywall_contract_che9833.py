@@ -1,4 +1,5 @@
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -7,14 +8,17 @@ ROOT = Path(__file__).resolve().parents[1]
 JOURNEY = ROOT / "qualification/journeys/billing_paywall_test_store_mmonetize.md"
 MANIFEST = ROOT / "qualification/manifests/billing_paywall_test_store_mmonetize.v1.json"
 EXPECTED_EVIDENCE = {
-    "screenshot",
-    "logcat_line",
-    "revenuecat_customer_entitlement_state",
+    "privacy_safe_screenshot_or_continuous_screen_recording",
+    "specified_logcat_evidence_or_case_E_absence_capture",
+    "revenuecat_dashboard_customer_entitlement_or_explicit_not_applicable",
     "testcase_revision",
-    "app_build_sha",
+    "sample_source_commit_sha",
+    "apk_sha256",
     "device_serial",
     "command_exit_status",
+    "timeout_or_completion_disposition",
 }
+KEY_LIKE_VALUE = re.compile(r"\b(?:appl|goog|amzn|amazon|rcb|sk_live)_[A-Za-z0-9_-]{16,}\b")
 
 
 class BillingPaywallContractTest(unittest.TestCase):
@@ -28,14 +32,56 @@ class BillingPaywallContractTest(unittest.TestCase):
         self.assertEqual(set(manifest["evidence_per_case"]), EXPECTED_EVIDENCE)
         self.assertEqual(manifest["execution_status"], "NOT-RUN")
         self.assertEqual(manifest["app"]["package_name"], "io.mmonetize.sample")
+        builds = manifest["app"]["builds"]
+        self.assertEqual(builds["configured_test_store"]["variant"], "adsTestDebug")
+        self.assertEqual(builds["configured_test_store"]["cases"], ["A", "B", "C", "D"])
+        self.assertEqual(builds["billing_not_configured"]["variant"], "adsTestDebug")
+        self.assertEqual(builds["billing_not_configured"]["cases"], ["E"])
+        self.assertEqual(
+            builds["configured_test_store"]["sample_source_commit_sha"],
+            builds["billing_not_configured"]["sample_source_commit_sha"],
+        )
+        self.assertEqual(
+            manifest["revenuecat_test_store"]["product_id"], "che801_premium_monthly_test"
+        )
+        self.assertEqual(
+            manifest["revenuecat_test_store"]["monthly_package_id"],
+            "recorded_from_dashboard_before_run",
+        )
         self.assertEqual(manifest["revenuecat_test_store"]["offering_id"], "che801_test")
         self.assertEqual(manifest["revenuecat_test_store"]["entitlement_id"], "premium")
         self.assertFalse(manifest["authoring_boundary"]["device_or_adb_commands_run"])
         self.assertFalse(manifest["authoring_boundary"]["apk_built_or_installed"])
         self.assertFalse(manifest["authoring_boundary"]["artemis_execution"])
-        self.assertEqual(manifest["review_contract"]["independent_non_author_reviewers_required"], 2)
+        self.assertEqual(
+            manifest["review_contract"]["independent_non_author_reviewers_required"], 2
+        )
         self.assertTrue(manifest["review_contract"]["same_revision_required"])
         self.assertTrue(manifest["review_contract"]["must_precede_execution"])
+
+        case_headings = list(re.finditer(r"(?m)^\d+\. \*\*([A-E])\b", text))
+        journey_cases = {
+            heading.group(1): text[
+                heading.end() : case_headings[index + 1].start()
+                if index + 1 < len(case_headings)
+                else len(text)
+            ]
+            for index, heading in enumerate(case_headings)
+        }
+        self.assertEqual(set(journey_cases), set(manifest["cases"]))
+        for case_id, case in manifest["cases"].items():
+            self.assertIn(case["assertion"], journey_cases[case_id])
+            self.assertIn(case["logcat_oracle"], journey_cases[case_id])
+            self.assertIn(case["build"], {"configured_test_store", "billing_not_configured"})
+        self.assertEqual(manifest["cases"]["C"]["identity_precondition"].count("App User ID"), 1)
+        self.assertEqual(
+            manifest["cases"]["E"]["customer_entitlement"],
+            "NOT_APPLICABLE: billing not initialized",
+        )
+        self.assertEqual(
+            manifest["cases"]["E"]["logcat_expected"],
+            "absent during the captured startup log window",
+        )
 
         for phrase in (
             "**A — Offering and prices.**",
@@ -44,12 +90,17 @@ class BillingPaywallContractTest(unittest.TestCase):
             "**D — Cancel.**",
             "**E — Billing not configured.**",
             "Premium active",
-            "onPurchased",
             "Billing is not configured",
             "two independent non-author reviewers",
             "or use a device or ADB.",
+            "within 60 seconds",
+            "following 30 seconds",
+            "NOT-RUN",
         ):
             self.assertIn(phrase, text)
+
+        self.assertIsNone(KEY_LIKE_VALUE.search(text))
+        self.assertIsNone(KEY_LIKE_VALUE.search(MANIFEST.read_text(encoding="utf-8")))
 
 
 if __name__ == "__main__":

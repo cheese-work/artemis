@@ -18,51 +18,97 @@
     "package_name": "io.mmonetize.sample",
     "entry": "Paywall — Real offering",
     "activity": "BillingPaywallDemoActivity",
-    "build_sha": "recorded_at_execution"
+    "builds": {
+      "configured_test_store": {
+        "variant": "adsTestDebug",
+        "cases": ["A", "B", "C", "D"],
+        "revenuecat_key": "configured_in_ignored_local_properties",
+        "sample_source_commit_sha": "c8cdf33bae61bb76577f0dacb14604011fe7e83d",
+        "apk_sha256": "recorded_at_execution"
+      },
+      "billing_not_configured": {
+        "variant": "adsTestDebug",
+        "cases": ["E"],
+        "revenuecat_key": "absent",
+        "sample_source_commit_sha": "c8cdf33bae61bb76577f0dacb14604011fe7e83d",
+        "apk_sha256": "recorded_at_execution"
+      }
+    }
   },
   "revenuecat_test_store": {
     "product_id": "che801_premium_monthly_test",
+    "monthly_package_id": "recorded_from_dashboard_before_run",
     "entitlement_id": "premium",
     "offering_id": "che801_test",
-    "api_key": "never_record"
+    "api_key": "never_record",
+    "package_list": "recorded_from_dashboard_before_run"
   },
   "cases": {
     "A": {
       "name": "offering_and_prices",
-      "assertion": "The plan list shows the che801_test packages with their localized Test Store prices."
+      "build": "configured_test_store",
+      "assertion": "The plan list shows every recorded che801_test package and its localized Test Store price.",
+      "logcat_oracle": "`initBilling: billing/core initialized`",
+      "logcat_expected": "present",
+      "customer_entitlement": "dashboard state for the identified case customer",
+      "readiness_timeout_seconds": 60
     },
     "B": {
       "name": "purchase_monthly",
-      "assertion": "The Test Store purchase shows Premium active, closes BillingPaywallDemoActivity, and leaves the premium entitlement active."
+      "build": "configured_test_store",
+      "assertion": "The Premium active toast appears in the continuous screen recording, BillingPaywallDemoActivity closes, and premium is active for the identified RevenueCat customer.",
+      "logcat_oracle": "`initBilling: billing/core initialized`",
+      "logcat_expected": "present",
+      "customer_entitlement": "RevenueCat dashboard for the App User ID associated with this purchase",
+      "completion_timeout_seconds": 120
     },
     "C": {
       "name": "restore_after_app_data_clear",
-      "assertion": "After pm clear and reopening the sample, Restore returns Active, onPurchased fires, and the premium entitlement is recorded."
+      "build": "configured_test_store",
+      "assertion": "Restore displays Active, the Premium active toast is captured in the continuous screen recording, BillingPaywallDemoActivity closes, and premium is active for the same App User ID as B.",
+      "logcat_oracle": "`initBilling: billing/core initialized`",
+      "logcat_expected": "present",
+      "identity_precondition": "The exact RevenueCat App User ID read from the dashboard before Restore must match B; if it differs or is ambiguous, mark NOT-RUN and BLOCKED.",
+      "customer_entitlement": "RevenueCat dashboard for the same App User ID as B",
+      "completion_timeout_seconds": 120
     },
     "D": {
       "name": "cancel_purchase",
-      "assertion": "Canceling the Test Store dialog shows no error, keeps the paywall open, and leaves the premium entitlement inactive."
+      "build": "configured_test_store",
+      "assertion": "The dialog dismisses, no purchase error appears during the following 30 seconds, the paywall remains open, and premium is inactive for this case's identified customer.",
+      "logcat_oracle": "`initBilling: billing/core initialized`",
+      "logcat_expected": "present",
+      "customer_entitlement": "RevenueCat dashboard for this case's identified App User ID; ambiguous identity is NOT-RUN and BLOCKED",
+      "cancel_observation_seconds": 30,
+      "readiness_timeout_seconds": 60
     },
     "E": {
       "name": "billing_not_configured",
-      "assertion": "The build without a RevenueCat key shows Billing is not configured."
+      "build": "billing_not_configured",
+      "assertion": "The Billing is not configured message appears and billing initialization is skipped.",
+      "logcat_oracle": "`initBilling: billing/core initialized`",
+      "logcat_expected": "absent during the captured startup log window",
+      "customer_entitlement": "NOT_APPLICABLE: billing not initialized",
+      "readiness_timeout_seconds": 60
     }
   },
   "fixture_reset": {
     "before_each_case": "adb -s <device_serial> shell pm clear io.mmonetize.sample",
     "pm_clear_is_install": false,
-    "case_C_restores_purchase_created_by": "B",
+    "case_C_restores_purchase_created_by": "B only when the exact dashboard App User ID matches before and after pm clear; otherwise NOT-RUN",
     "case_E_requires_build_without_revenuecat_key": true,
     "shared_device_state_reset": false
   },
   "evidence_per_case": [
-    "screenshot",
-    "logcat_line",
-    "revenuecat_customer_entitlement_state",
+    "privacy_safe_screenshot_or_continuous_screen_recording",
+    "specified_logcat_evidence_or_case_E_absence_capture",
+    "revenuecat_dashboard_customer_entitlement_or_explicit_not_applicable",
     "testcase_revision",
-    "app_build_sha",
+    "sample_source_commit_sha",
+    "apk_sha256",
     "device_serial",
-    "command_exit_status"
+    "command_exit_status",
+    "timeout_or_completion_disposition"
   ],
   "review_contract": {
     "independent_non_author_reviewers_required": 2,
