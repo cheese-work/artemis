@@ -8,6 +8,8 @@ ALLOWED_HOSTS: tuple[str, ...] = ("registry.npmjs.org", "pypi.org", "files.pytho
 HTTPS_PORT = 443
 MAX_HOPS = 5
 HOSTS_PIN_PATH = "/run/artemis-preview/egress.hosts"
+# The proxy unit's RuntimeDirectory: the only path Squid may write.
+RUNTIME_DIR = "/run/artemis-preview-egress"
 PROXY_PORT = 3128
 # Stand-in UID in the checked-in ruleset; the host substitutes the account's real UID.
 PROXY_UID_PLACEHOLDER = 65533
@@ -126,6 +128,9 @@ def render_proxy_config(listen_address: str = "127.0.0.1") -> str:
     denied_ipv6 = " ".join((*map(str, DENIED_GLOBAL_UNICAST_IPV6), *SQUID_DENIED_IPV6))
     return f"""http_port {bind_host}:{PROXY_PORT}
 hosts_file {HOSTS_PIN_PATH}
+pid_filename {RUNTIME_DIR}/squid.pid
+cache_log {RUNTIME_DIR}/cache.log
+access_log none
 dns_nameservers 127.0.0.1
 dns_multicast_local off
 cache deny all

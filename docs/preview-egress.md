@@ -75,12 +75,11 @@ rather than running `npm ci` without it.
 - Never run against a real host in this stage. The nftables text and the unit are
   checked by rendered-text tests only; `nft -c -f` and `systemd-analyze verify`
   are the first steps of the install stage.
-- Squid's default pid file (`/run/squid.pid`) is outside the unit's runtime
-  directory. If the host's Squid treats the failed write as fatal, add a
-  `pid_filename` line to the config in the install stage. The unit's only
-  writable path is its runtime directory (no `LogsDirectory`), so Squid's default
-  log files under `/var/log/squid` are not writable either; point `cache_log` and
-  `access_log` at the runtime directory or set `access_log none` in the same stage.
+- The unit's only writable path is its runtime directory
+  (`/run/artemis-preview-egress`, no `LogsDirectory`). The Squid config puts the pid
+  file and `cache_log` there and sets `access_log none`, so nothing is written under
+  `/var/log/squid`. The runtime directory is removed when the unit stops, so
+  `cache.log` is lost with it; ship it to the journal in the install stage if it is needed.
 - The proxy reads the pin through `SupplementaryGroups=artemis-preview-runner`,
   which also gives it read access to the shared runner directory.
 - The proxy account can reach any public address on 443 if the Squid ACLs fail;

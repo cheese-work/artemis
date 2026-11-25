@@ -190,6 +190,10 @@ def test_proxy_config_is_current_and_requires_a_resolved_registry_connect():
     ]
     assert "cache deny all" in lines
     assert "cache_dir" not in rendered
+    # every file Squid writes sits in the unit's runtime directory (its only writable path)
+    assert "pid_filename /run/artemis-preview-egress/squid.pid" in lines
+    assert "cache_log /run/artemis-preview-egress/cache.log" in lines
+    assert "access_log none" in lines
     assert "forwarded_for delete" in lines
     assert "::ffff:0:0/96" not in rendered
 
@@ -214,9 +218,10 @@ def test_squid_applies_connect_acl_to_both_pin_families(tmp_path):
         encoding="utf-8",
     )
     (tmp_path / "squid.conf").write_text(
-        egress.render_proxy_config().replace(egress.HOSTS_PIN_PATH, "/fixtures/egress.hosts")
-        + "pid_filename /tmp/squid.pid\ncache_log /tmp/squid.log\naccess_log none\n"
-        "connect_timeout 2 seconds\n",
+        egress.render_proxy_config()
+        .replace(egress.HOSTS_PIN_PATH, "/fixtures/egress.hosts")
+        .replace(egress.RUNTIME_DIR, "/tmp")
+        + "connect_timeout 2 seconds\n",
         encoding="utf-8",
     )
     cases = {
