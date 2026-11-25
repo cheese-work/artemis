@@ -49,6 +49,13 @@ class RecordingAssignment:
     host_started_at: float | None = None
     clock_offset: float | None = None
 
+    @property
+    def server_started_at(self) -> float | None:
+        """The recording start in server time, once the host reported both values."""
+        if self.host_started_at is None or self.clock_offset is None:
+            return None
+        return self.host_started_at + self.clock_offset
+
     @classmethod
     def _from_row(cls, row: sqlite3.Row) -> "RecordingAssignment":
         return cls(

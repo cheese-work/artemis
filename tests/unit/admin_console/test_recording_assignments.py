@@ -6,7 +6,10 @@ import sqlite3
 
 import pytest
 
-from apps.admin_console.services.recording_assignments import RecordingAssignmentStore
+from apps.admin_console.services.recording_assignments import (
+    RecordingAssignment,
+    RecordingAssignmentStore,
+)
 
 
 @pytest.fixture
@@ -240,3 +243,28 @@ def test_wait_ready_polls_shared_db_without_real_sleep(tmp_path: Path, signal: s
         assert sleeps == [0.2, 0.2]
     else:
         assert ready is None
+
+
+@pytest.mark.parametrize(
+    ("host_started_at", "clock_offset", "expected"),
+    [(1000.0, 5.0, 1005.0), (1000.0, None, None), (None, 5.0, None), (None, None, None)],
+)
+def test_server_started_at_is_host_start_plus_clock_offset(
+    host_started_at: float | None, clock_offset: float | None, expected: float | None
+) -> None:
+    assignment = RecordingAssignment(
+        recording_id="rec",
+        host_id="host-a",
+        session_id="run-a",
+        run_generation=1,
+        desired_state="record",
+        revision=1,
+        acked_revision=0,
+        deadline=0.0,
+        created_at=0.0,
+        updated_at=0.0,
+        host_started_at=host_started_at,
+        clock_offset=clock_offset,
+    )
+
+    assert assignment.server_started_at == expected

@@ -52,6 +52,8 @@ from apps.admin_console.services.deploy_drain import (
     write_drain,
 )
 from apps.admin_console.services.device_reservation import device_reservations
+from apps.admin_console.services.host_registry import host_registry
+from apps.admin_console.services.recording_assignments import RecordingAssignmentStore
 from artemis.config import (
     PAUSE_FILE,
     TEST_DATA_DIR,
@@ -69,6 +71,7 @@ from artemis.runtime import (
     request_cancel,
     trace_store,
 )
+from artemis.config.host_agent import host_recording_enabled
 from artemis.runtime.adb_endpoint import InvalidAdbEndpoint
 from artemis.runtime.host_endpoints import host_endpoints
 from artemis.runtime.lifecycle import TERMINAL_STATUSES
@@ -1434,6 +1437,46 @@ class TaskQueueService:
         state.wake_event.set()
 
     @classmethod
+    def _recording_store(cls) -> RecordingAssignmentStore:
+        return RecordingAssignmentStore(host_registry.db_path)
+
+    @classmethod
+    async def _assign_and_wait_for_recorder(cls, target: AdbTarget, sess_id: str) -> bool:
+        """Assign the host recording, wait up to 10 s for the recorder, never fail the run.
+
+        True once an assignment exists, so the caller stops it when the run ends.
+        """
+        from apps.admin_console.database.repositories.run_catalog_repository import (
+            run_catalog_repo,
+        )
+
+        recording_id = None
+        try:
+            store = cls._recording_store()
+            recording_id = store.assign(
+                target.host_id, sess_id, target.endpoint.generation
+            ).recording_id
+            run_catalog_repo.set_recording_state(sess_id, recording_id, capture="pending")
+            ready = await asyncio.to_thread(store.wait_ready, sess_id)
+            if ready is None:
+                logger.warning(
+                    "event=recorder_not_ready session_id=%s host_id=%s", sess_id, target.host_id
+                )
+            run_catalog_repo.set_recording_state(
+                sess_id, recording_id, capture="recording" if ready else "missing:not_ready"
+            )
+        except Exception:
+            logger.exception("event=recorder_wait_failed session_id=%s", sess_id)
+        return recording_id is not None
+
+    @classmethod
+    def _stop_recording(cls, sess_id: str) -> None:
+        try:
+            cls._recording_store().request_stop(sess_id)
+        except Exception:
+            logger.exception("event=recorder_stop_failed session_id=%s", sess_id)
+
+    @classmethod
     async def _execute_task_item(cls, task_item: dict[str, Any]) -> None:
         """Run one queued task to completion in its own worker subprocess."""
         sess_id = task_item.get("session_id")
@@ -1445,6 +1488,7 @@ class TaskQueueService:
         output_task: asyncio.Task[None] | None = None
         config_snapshot = None
         cmd = None
+        recording_assigned = False
         state.executing_run_keys.add(run_key)
         try:
             if not isinstance(goal, str) or not goal.strip():
@@ -1504,6 +1548,9 @@ class TaskQueueService:
                 goal_metadata(goal),
                 profile,
             )
+            # Before worker_spawned: a host NACK during the wait still requeues.
+            if sess_id and target.host_id and host_recording_enabled():
+                recording_assigned = await cls._assign_and_wait_for_recorder(target, str(sess_id))
             # From here a worker process may exist before it is registered: the host
             # NACK (requeue_starting) must treat this run as spawned.
             task_item["worker_spawned"] = True
@@ -1528,6 +1575,8 @@ class TaskQueueService:
             # 4. Perform fallback database status update and notification
             if sess_id:
                 await cls._persist_terminal_session_status(sess_id, returncode, manual_stop)
+                if recording_assigned:
+                    cls._stop_recording(str(sess_id))
                 await cls._recover_or_fail_recording(sess_id)
                 cls._deliver_outcome(sess_id, task_item, goal)
 
@@ -1549,6 +1598,8 @@ class TaskQueueService:
                     logger.exception(
                         f"[QueueWorker] Could not persist failure status for [{sess_id}]"
                     )
+                if recording_assigned:
+                    cls._stop_recording(str(sess_id))
         finally:
             host_admission.mark(run_key, RunPhase.CLEANING_UP)
             await cls._finish_output_forwarder(output_task)
