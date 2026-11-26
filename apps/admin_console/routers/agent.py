@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+import functools
 import json
 import logging
 import os
 from pathlib import Path
+import re
 from sys import float_info
 import time
 from typing import Any, NoReturn
 
 import anyio
-from fastapi import APIRouter, Depends, Request, WebSocket
+from fastapi import APIRouter, Depends, Request, Response, WebSocket
 from pydantic import BaseModel, Field
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 from starlette.responses import FileResponse
@@ -28,11 +30,14 @@ from apps.admin_console.core.agent_auth import (
     require_enrollment_code,
 )
 from apps.admin_console.services import host_registry as hr
+from apps.admin_console.services import recording_uploads as ru
+from apps.admin_console.services import run_storage
 from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import RegistryError, host_registry
 from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.services.host_admission import host_admission
 from apps.admin_console.services.recording_assignments import RecordingAssignmentStore
+from artemis.config.paths import get_app_dir
 from artemis.runtime.host_protocol import CONTRACT, Frame, ProtocolError
 
 logger = logging.getLogger(__name__)
@@ -216,6 +221,139 @@ async def unenroll(host: dict = Depends(require_agent_token("connect"))) -> dict
     await host_hub.close_host(host_id, CLOSE_REVOKED, "revoked")
     logger.info("event=host_unenrolled host_id=%s", host_id)
     return {"status": "revoked"}
+
+
+_MAX_CREATE_BODY_BYTES = 4096
+_CHECKSUM_HEADER = re.compile(r"sha256 ([0-9a-f]{64})")
+
+
+def _staging_root() -> Path:
+    """Private staging area: a sibling of ``traces/`` under the app dir (ARTEMIS_APP_DIR)."""
+    return get_app_dir() / "recording-uploads"
+
+
+@functools.cache
+def _upload_store() -> ru.RecordingUploadStore:
+    # One instance per process: its lock and the per-host upload limit cover every request.
+    return ru.RecordingUploadStore(_staging_root())
+
+
+_UPLOAD_ERRORS: dict[type[Exception], tuple[int, str]] = {
+    ru.InvalidUpload: (400, "upload_invalid"),
+    ru.UploadNotFound: (404, "upload_not_found"),
+    ru.UploadConflict: (409, "upload_conflict"),
+    ru.DeclaredLengthExceeded: (409, "length_exceeded"),
+    ru.ChunkTooLarge: (413, "chunk_too_large"),
+    ru.ChecksumMismatch: (422, "checksum_mismatch"),
+    ru.TooManyUploads: (429, "too_many_uploads"),
+    ru.InsufficientStorage: (507, "insufficient_storage"),
+}
+
+
+def _upload_error(
+    status: int, code: str, detail: str, headers: dict[str, str] | None = None
+) -> AdminAPIError:
+    return AdminAPIError(
+        status, detail, code, "Retry from the offset the server reports.", headers=headers
+    )
+
+
+def _upload_failure(error: Exception) -> AdminAPIError:
+    if isinstance(error, ru.OffsetConflict):
+        return _upload_error(
+            409,
+            "offset_conflict",
+            "The chunk does not start at the stored offset.",
+            {"Upload-Offset": str(error.durable_offset)},
+        )
+    if isinstance(error, ru.InsufficientStorage):
+        run_storage.note_insufficient_storage(host_registry.db_path)
+    status, code = _UPLOAD_ERRORS[type(error)]
+    return _upload_error(status, code, code.replace("_", " "))
+
+
+async def _read_capped(request: Request, limit: int) -> bytes:
+    """Read the body as a stream; refuse once it passes ``limit`` bytes, never buffering more."""
+    declared = request.headers.get("content-length", "")
+    if declared.isascii() and declared.isdigit() and int(declared) > limit:
+        raise ru.ChunkTooLarge
+    parts: list[bytes] = []
+    size = 0
+    async for part in request.stream():
+        size += len(part)
+        if size > limit:
+            raise ru.ChunkTooLarge
+        parts.append(part)
+    return b"".join(parts)
+
+
+async def _upload_call(host_id: str, fn: Any, *args: Any) -> Any:
+    """Run a blocking store call off the event loop and map its failures to API errors."""
+    try:
+        return await anyio.to_thread.run_sync(fn, host_id, *args)
+    except (*_UPLOAD_ERRORS, ru.OffsetConflict) as error:
+        raise _upload_failure(error) from error
+
+
+@router.post("/uploads")
+async def create_upload(
+    request: Request, host: dict = Depends(require_agent_token("uploads"))
+) -> dict:
+    try:
+        body = json.loads(await _read_capped(request, _MAX_CREATE_BODY_BYTES))
+    except (ru.ChunkTooLarge, ValueError):
+        body = None
+    fields = (
+        [body.get(k) for k in ("session_id", "recording_id", "length", "sha256")]
+        if isinstance(body, dict)
+        else []
+    )
+    if len(fields) != 4 or not all(isinstance(fields[i], str) for i in (0, 1, 3)):
+        raise _upload_failure(ru.InvalidUpload())
+    session_id, recording_id, length, digest = fields
+    # A host may upload only for a recording the server assigned to it for this session.
+    assigned = await anyio.to_thread.run_sync(
+        _recording_store().is_assigned, host["id"], recording_id, session_id
+    )
+    if not assigned:
+        raise _upload_error(404, "recording_unknown", "recording unknown")
+    upload_id, offset = await _upload_call(
+        host["id"], _upload_store().create, session_id, recording_id, length, digest
+    )
+    return {"upload_id": upload_id, "offset": offset}
+
+
+@router.get("/uploads/{upload_id}")
+async def upload_offset(
+    upload_id: str, host: dict = Depends(require_agent_token("uploads"))
+) -> dict:
+    return {"offset": await _upload_call(host["id"], _upload_store().offset, upload_id)}
+
+
+@router.patch("/uploads/{upload_id}")
+async def append_upload(
+    upload_id: str, request: Request, host: dict = Depends(require_agent_token("uploads"))
+) -> dict:
+    offset = request.headers.get("upload-offset", "")
+    checksum = _CHECKSUM_HEADER.fullmatch(request.headers.get("upload-checksum", ""))
+    if not (offset.isascii() and offset.isdigit() and checksum):
+        raise _upload_failure(ru.InvalidUpload())
+    try:
+        chunk = await _read_capped(request, ru.MAX_CHUNK_BYTES)
+    except ru.ChunkTooLarge as error:
+        raise _upload_failure(error) from error
+    new_offset = await _upload_call(
+        host["id"], _upload_store().append, upload_id, int(offset), chunk, checksum[1]
+    )
+    return {"offset": new_offset}
+
+
+@router.delete("/uploads/{upload_id}", status_code=204)
+async def abort_upload(
+    upload_id: str, host: dict = Depends(require_agent_token("uploads"))
+) -> Response:
+    await _upload_call(host["id"], _upload_store().abort, upload_id)
+    return Response(status_code=204)
 
 
 @router.websocket("/connect", dependencies=[Depends(public_tier), Depends(require_agent_websocket)])

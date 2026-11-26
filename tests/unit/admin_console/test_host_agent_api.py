@@ -15,6 +15,8 @@ import sqlite3
 import struct
 import time
 from contextlib import closing
+from hashlib import sha256
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
@@ -35,6 +37,7 @@ from apps.admin_console.routers import agent as agent_router
 from apps.admin_console.core.access_control import AdminAPIError, admin_api_error_handler
 from apps.admin_console.server import proxy_aware_app
 from apps.admin_console.services import host_registry as hr
+from apps.admin_console.services import run_storage
 from apps.admin_console.services.host_registry import host_registry
 from apps.admin_console.services.host_tunnel import HostTunnels
 from apps.admin_console.services.recording_assignments import (
@@ -1501,3 +1504,186 @@ def test_browser_phone_identity_uses_local_pool_without_changing_shared_endpoint
     assert phone["product"] == "raven"
     choose_pool.assert_called_once_with(AdbEndpoint.local())
     assert current_adb_endpoint() == shared
+
+
+SESSION = "a5395d15-9fbe-4b3f-bc7a-d15202c02885"
+CHUNK_LIMIT = 8 * 1024 * 1024
+
+
+@pytest.fixture(autouse=True)
+def upload_staging(tmp_path, monkeypatch):
+    """One private staging root per test, outside everything the server scans."""
+    monkeypatch.setattr(agent_router, "_staging_root", lambda: tmp_path / "recording-uploads")
+    agent_router._upload_store.cache_clear()
+    yield tmp_path / "recording-uploads"
+    agent_router._upload_store.cache_clear()
+
+
+def _agent_headers(admin, key=None):
+    key, host_id = _enrolled(admin, key)
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, host_id))
+        token = ws.receive_json()["token"]
+    return host_id, {"Authorization": f"Bearer {token}"}
+
+
+def _create_upload(admin, headers, recording_id, body: bytes, session_id=SESSION, **override):
+    payload = {
+        "session_id": session_id,
+        "recording_id": recording_id,
+        "length": len(body),
+        "sha256": sha256(body).hexdigest(),
+    } | override
+    return admin.post("/api/agent/uploads", headers=headers, json=payload)
+
+
+def _patch(admin, headers, upload_id, offset, chunk: bytes, digest=None):
+    return admin.patch(
+        f"/api/agent/uploads/{upload_id}",
+        headers=headers
+        | {
+            "Upload-Offset": str(offset),
+            "Upload-Checksum": f"sha256 {digest or sha256(chunk).hexdigest()}",
+        },
+        content=chunk,
+    )
+
+
+def _assigned_upload(admin, recording_store, body: bytes):
+    host_id, headers = _agent_headers(admin)
+    recording_id = recording_store.assign(host_id, SESSION, 1).recording_id
+    created = _create_upload(admin, headers, recording_id, body)
+    assert created.status_code == 200, created.text
+    return host_id, headers, recording_id, created.json()["upload_id"]
+
+
+def test_upload_create_patch_and_resume_offsets(admin, recording_store):
+    first, second = b"a" * 5, b"b" * 7
+    _, headers, _, upload_id = _assigned_upload(admin, recording_store, first + second)
+    url = f"/api/agent/uploads/{upload_id}"
+    assert admin.get(url, headers=headers).json() == {"offset": 0}
+    assert _patch(admin, headers, upload_id, 0, first).json() == {"offset": 5}
+    assert _patch(admin, headers, upload_id, 5, second).json() == {"offset": 12}
+    assert admin.get(url, headers=headers).json() == {"offset": 12}
+
+
+def test_upload_create_is_bound_to_the_assigned_host_and_session(admin, recording_store):
+    owner, owner_headers = _agent_headers(admin)
+    recording_id = recording_store.assign(owner, SESSION, 1).recording_id
+    _, other_headers = _agent_headers(admin)
+    other_session = "73c3e890-2a7e-498a-acc4-801949f2416e"
+    for headers, session_id in [(other_headers, SESSION), (owner_headers, other_session)]:
+        response = _create_upload(admin, headers, recording_id, b"x", session_id=session_id)
+        assert response.status_code == 404, response.text
+        assert response.json()["code"] == "recording_unknown"
+    unassigned = "00000000-0000-4000-8000-000000000000"
+    response = _create_upload(admin, owner_headers, unassigned, b"x")
+    assert response.status_code == 404 and response.json()["code"] == "recording_unknown"
+
+
+def test_upload_ids_are_private_to_their_host(admin, recording_store):
+    _, _, _, upload_id = _assigned_upload(admin, recording_store, b"abc")
+    _, stranger = _agent_headers(admin)
+    url = f"/api/agent/uploads/{upload_id}"
+    for response in (
+        admin.get(url, headers=stranger),
+        _patch(admin, stranger, upload_id, 0, b"abc"),
+        admin.delete(url, headers=stranger),
+    ):
+        assert response.status_code == 404, response.text
+        assert response.json()["code"] == "upload_not_found"
+
+
+def test_upload_wrong_offset_reports_durable_offset_and_repeat_is_idempotent(
+    admin, recording_store
+):
+    _, headers, _, upload_id = _assigned_upload(admin, recording_store, b"abcdef")
+    assert _patch(admin, headers, upload_id, 0, b"abc").json() == {"offset": 3}
+    conflict = _patch(admin, headers, upload_id, 1, b"def")
+    assert conflict.status_code == 409
+    assert conflict.json()["code"] == "offset_conflict"
+    assert conflict.headers["Upload-Offset"] == "3"
+    repeat = _patch(admin, headers, upload_id, 0, b"abc")
+    assert repeat.status_code == 200 and repeat.json() == {"offset": 3}
+
+
+def test_upload_rejects_bad_checksum_and_oversized_body(admin, recording_store, upload_staging):
+    _, headers, _, upload_id = _assigned_upload(admin, recording_store, b"abc")
+    bad = _patch(admin, headers, upload_id, 0, b"abc", digest="0" * 64)
+    assert bad.status_code == 422 and bad.json()["code"] == "checksum_mismatch"
+    for header in ({"Upload-Checksum": "md5 abc"}, {"Upload-Offset": "x"}):
+        invalid = admin.patch(
+            f"/api/agent/uploads/{upload_id}",
+            headers=headers
+            | {"Upload-Offset": "0", "Upload-Checksum": f"sha256 {'0' * 64}"}
+            | header,
+            content=b"abc",
+        )
+        assert invalid.status_code == 400 and invalid.json()["code"] == "upload_invalid"
+    big = b"z" * (CHUNK_LIMIT + 1)
+    over = _patch(admin, headers, upload_id, 0, big)
+    assert over.status_code == 413 and over.json()["code"] == "chunk_too_large"
+    assert admin.get(f"/api/agent/uploads/{upload_id}", headers=headers).json() == {"offset": 0}
+    assert (upload_staging / f"{upload_id}.part").stat().st_size == 0
+
+
+def test_upload_declared_length_overrun_and_conflicting_create(admin, recording_store):
+    _, headers, recording_id, upload_id = _assigned_upload(admin, recording_store, b"abc")
+    over = _patch(admin, headers, upload_id, 0, b"abcd")
+    assert over.status_code == 409 and over.json()["code"] == "length_exceeded"
+    conflict = _create_upload(admin, headers, recording_id, b"abcdef")
+    assert conflict.status_code == 409 and conflict.json()["code"] == "upload_conflict"
+    invalid = _create_upload(admin, headers, recording_id, b"abc", length=0)
+    assert invalid.status_code == 400 and invalid.json()["code"] == "upload_invalid"
+
+
+def test_upload_third_live_upload_for_one_host_is_429(admin, recording_store):
+    host_id, headers = _agent_headers(admin)
+    sessions = [f"73c3e890-2a7e-498a-acc4-80194{index:07d}" for index in range(3)]
+    recordings = [recording_store.assign(host_id, s, 1).recording_id for s in sessions]
+    for session_id, recording_id in zip(sessions[:2], recordings[:2]):
+        assert _create_upload(admin, headers, recording_id, b"x", session_id=session_id).is_success
+    response = _create_upload(admin, headers, recordings[2], b"x", session_id=sessions[2])
+    assert response.status_code == 429 and response.json()["code"] == "too_many_uploads"
+
+
+def test_upload_without_disk_space_is_507_and_is_remembered(admin, recording_store, monkeypatch):
+    host_id, headers = _agent_headers(admin)
+    recording_id = recording_store.assign(host_id, SESSION, 1).recording_id
+    monkeypatch.setattr(run_storage, "disk_usage", lambda _path: SimpleNamespace(free=0))
+    noted = []
+    monkeypatch.setattr(run_storage, "note_insufficient_storage", noted.append)
+    response = _create_upload(admin, headers, recording_id, b"abc")
+    assert response.status_code == 507 and response.json()["code"] == "insufficient_storage"
+    assert noted == [host_registry.db_path]
+
+
+def test_upload_routes_require_an_uploads_scope_token_and_the_feature_flag(
+    admin, recording_store, monkeypatch
+):
+    _, headers, _, upload_id = _assigned_upload(admin, recording_store, b"abc")
+    token = headers["Authorization"][7:]
+    url = f"/api/agent/uploads/{upload_id}"
+    with closing(sqlite3.connect(host_registry.db_path)) as conn, conn:
+        conn.execute("UPDATE host_tokens SET scopes = 'connect'")
+    calls = [
+        lambda h: admin.post("/api/agent/uploads", headers=h, json={}),
+        lambda h: admin.get(url, headers=h),
+        lambda h: admin.patch(url, headers=h, content=b""),
+        lambda h: admin.delete(url, headers=h),
+    ]
+    for call in calls:
+        assert call({}).status_code == 401
+        assert call({"Authorization": "Bearer forged"}).status_code == 401
+        assert call({"Authorization": f"Bearer {token}"}).status_code == 401
+    monkeypatch.setenv("ARTEMIS_HOST_AGENT", "0")
+    for call in calls:
+        assert call({}).status_code == 404
+
+
+def test_upload_delete_is_204_then_gone(admin, recording_store):
+    _, headers, _, upload_id = _assigned_upload(admin, recording_store, b"abc")
+    url = f"/api/agent/uploads/{upload_id}"
+    assert admin.delete(url, headers=headers).status_code == 204
+    gone = admin.get(url, headers=headers)
+    assert gone.status_code == 404 and gone.json()["code"] == "upload_not_found"

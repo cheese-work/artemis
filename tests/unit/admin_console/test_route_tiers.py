@@ -228,6 +228,10 @@ HOST_ROUTES = [
     ("/api/agent/challenge", {"POST"}, "agent"),
     ("/api/agent/renew", {"POST"}, "agent"),
     ("/api/agent/unenroll", {"POST"}, "agent"),
+    ("/api/agent/uploads", {"POST"}, "agent"),
+    ("/api/agent/uploads/{upload_id}", {"GET"}, "agent"),
+    ("/api/agent/uploads/{upload_id}", {"PATCH"}, "agent"),
+    ("/api/agent/uploads/{upload_id}", {"DELETE"}, "agent"),
 ]
 
 
