@@ -101,9 +101,12 @@ Same split: a networked acquisition, then a build with no network in any
    `--platform` per glibc tag up to 2.36 plus the legacy manylinux aliases
    (pip does not expand them). A package with no wheel for the builder fails
    here; there is no fallback to a source build. One exception: a package
-   with no Linux wheel that only marker-conditioned dependencies reach (for
-   example `pywin32` on `sys_platform == 'win32'`) is skipped by the plan;
-   `pip download` skips it by marker, or fails if the marker holds.
+   with no Linux wheel that only marker-conditioned dependencies reach is
+   skipped, but only if every marker is false for the builder (CPython 3.12,
+   Linux, x86_64; `BUILDER_ENV` in `scripts/preview_build.py`), for example
+   `pywin32` on `sys_platform == 'win32'`. A marker that is true there, such as
+   `python_full_version < '3.13'`, keeps the package required and the plan
+   fails. `packaging` must be importable where the plan runs.
 2. **Stage and verify.** `stage_python_manifest(work_dir, plan, pip_version)`
    records the SHA256 of `pyproject.toml`, `uv.lock`, both requirement files,
    the wheelhouse tree (files and modes) and the pip version used. It refuses

@@ -298,6 +298,41 @@ def test_python_plan_skips_a_windows_only_package_reached_only_by_marker(preview
     assert preview_build.acquire_python_plan(pydir, PROXY).commands
 
 
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "python_full_version < '3.13'",
+        "python_version < '3.13' or sys_platform == 'win32'",
+        "sys_platform != 'win32'",
+        "platform_machine == 'x86_64' and implementation_name == 'cpython'",
+    ],
+)
+def test_python_plan_refuses_a_windows_only_package_behind_a_marker_true_on_the_builder(
+    preview_build, pydir, marker
+):
+    lock = _lock_with_wheels("left_pad-1.2.3-py3-none-any.whl").replace(
+        'source = { editable = "." }',
+        f'source = {{ editable = "." }}\ndependencies = [{{ name = "winlib", marker = "{marker}" }}]',
+    )
+    (pydir / "uv.lock").write_text(lock + WIN_ONLY)
+    with pytest.raises(ValueError, match=r"winlib==9.*compatible wheel"):
+        preview_build.acquire_python_plan(pydir, PROXY)
+
+
+@pytest.mark.parametrize(
+    "marker", ["sys_platform == 'darwin'", "python_full_version >= '3.13'", "extra == 'dev'"]
+)
+def test_python_plan_skips_a_windows_only_package_behind_a_marker_false_on_the_builder(
+    preview_build, pydir, marker
+):
+    lock = _lock_with_wheels("left_pad-1.2.3-py3-none-any.whl").replace(
+        'source = { editable = "." }',
+        f'source = {{ editable = "." }}\ndependencies = [{{ name = "winlib", marker = "{marker}" }}]',
+    )
+    (pydir / "uv.lock").write_text(lock + WIN_ONLY)
+    assert preview_build.acquire_python_plan(pydir, PROXY).commands
+
+
 def test_python_plan_refuses_a_windows_only_package_reached_without_marker(preview_build, pydir):
     lock = _lock_with_wheels("left_pad-1.2.3-py3-none-any.whl").replace(
         'source = { editable = "." }',

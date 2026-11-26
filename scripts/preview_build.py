@@ -12,6 +12,8 @@ import tomllib
 from typing import TypedDict
 from urllib.parse import urlsplit
 
+from packaging.markers import Marker
+
 
 @dataclass(frozen=True)
 class NodeAcquisitionPlan:
@@ -197,6 +199,18 @@ def _proxy(proxy_url: str) -> None:
         raise ValueError("acquisition requires an HTTP(S) proxy URL")
 
 
+# Marker environment of the python:3.12-slim builder (CPython 3.12, Debian glibc, x86_64).
+BUILDER_ENV = {
+    "implementation_name": "cpython",
+    "platform_python_implementation": "CPython",
+    "os_name": "posix",
+    "sys_platform": "linux",
+    "platform_system": "Linux",
+    "platform_machine": "x86_64",
+    "python_version": "3.12",
+    "python_full_version": "3.12.0",
+    "extra": "",
+}
 PYTHON_PLATFORM_TAGS = frozenset(PYTHON_PLATFORMS[1::2]) | {"any"}
 
 
@@ -237,7 +251,7 @@ def acquire_python_plan(work_dir: Path, proxy_url: str) -> PythonAcquisitionPlan
     except (KeyError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ValueError("uv.lock must be readable TOML with packages") from error
     edges = [
-        (dep["name"], "marker" in dep)
+        (dep["name"], "marker" not in dep or Marker(dep["marker"]).evaluate(BUILDER_ENV))
         for package in packages
         for dep in (
             *package.get("dependencies", []),
@@ -245,11 +259,8 @@ def acquire_python_plan(work_dir: Path, proxy_url: str) -> PythonAcquisitionPlan
             *(d for group in package.get("dev-dependencies", {}).values() for d in group),
         )
     ]
-    marker_gated = {
-        name
-        for name in {name for name, _ in edges}
-        if all(gated for target, gated in edges if target == name)
-    }
+    # Inactive on the builder: every incoming edge has a marker that is false there.
+    marker_gated = {name for name, _ in edges} - {name for name, live in edges if live}
     for package in packages:
         if "registry" not in package.get("source", {}):
             continue
