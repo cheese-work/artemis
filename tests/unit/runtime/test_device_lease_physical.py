@@ -414,16 +414,21 @@ class PhysicalTransferTests(unittest.TestCase):
         return pool, transfer, resume
 
     def contend(self, pool, operation):
-        """Start a competitor and return only once it is blocked on the held admission guard.
+        """Start a competitor and return only once it has met the held admission guard.
 
-        The guard's in-process lock is observed: the competitor signals just before it
-        waits on that lock, which the paused transfer holds, so it cannot have passed it.
+        The guard's in-process lock is observed. The competitor reports contention only
+        after a non-blocking attempt on that lock fails, which the paused transfer holds,
+        and then it waits for the lock. So the test resumes the transfer after proven
+        contention, never after a mere start.
         """
         entered, real = threading.Event(), self.guard._lock
 
         class Observed:
             def acquire(self, *args, **kwargs):
-                entered.set()
+                if real.acquire(blocking=False):
+                    real.release()  # free: no contention, so the test must fail
+                else:
+                    entered.set()  # held by the paused transfer: contention is real
                 return real.acquire(*args, **kwargs)
 
             def release(self):
