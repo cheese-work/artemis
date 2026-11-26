@@ -362,3 +362,25 @@ async def test_missing_comments_table_returns_notes_not_ready_on_item_routes(
     payload = {"json": {"body": "Not ready"}} if method == "PATCH" else {}
     response = await _item("qa", method, comment_run, "cmt_x", **payload)
     assert response.status_code == 503 and response.json()["code"] == "notes_not_ready"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+async def test_signed_in_caller_without_subject_gets_404_for_unknown_comment_and_hidden_run(
+    comment_run, library, method
+):
+    # A fully anonymous caller never reaches the handler: the shared evidence_scope
+    # dependency answers 401 first on every note write (same as POST).
+    role = "no_subject"
+    other_run = library.seed()
+    theirs = await _create("qa", comment_run)
+    payload = {"json": {"body": "Denied"}} if method == "PATCH" else {}
+    unknown = await _item(role, method, comment_run, "cmt_unknown", **payload)
+    wrong_run = await _item(role, method, other_run, theirs["comment_id"], **payload)
+    with sqlite3.connect(library.db) as conn:
+        conn.execute("UPDATE run_meta SET deleted_at = 1 WHERE session_id = ?", (other_run,))
+    deleted = await _item(role, method, other_run, theirs["comment_id"], **payload)
+    responses = (unknown, wrong_run, deleted)
+    assert [r.status_code for r in responses] == [404] * 3, [r.text for r in responses]
+    assert all(r.json()["code"] == "run_not_visible" for r in responses)
+    assert (await _call("qa", "GET", comment_run)).json() == {"comments": [theirs]}

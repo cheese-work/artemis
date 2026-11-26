@@ -312,12 +312,16 @@ def edit_comment(
     body: CommentCreate,
     identity: AccessIdentity = Depends(public_tier),
 ):
-    principal_id = note_principal(identity)
-    with _database(session_id, identity, include_comments=True) as conn, conn:
-        conn.execute("BEGIN IMMEDIATE")
-        _require_author(_comment(conn, session_id, comment_id), principal_id)
-        require_note_write(principal_id)
-        return _present_comment(conn, notes.edit_comment(conn, comment_id, body.body))
+    with _database(session_id, identity, include_comments=True) as conn:
+        # Run visibility and comment existence answer before the actor check; the principal
+        # lookup writes on its own connection, so it must run before BEGIN IMMEDIATE.
+        _comment(conn, session_id, comment_id)
+        principal_id = note_principal(identity)
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            _require_author(_comment(conn, session_id, comment_id), principal_id)
+            require_note_write(principal_id)
+            return _present_comment(conn, notes.edit_comment(conn, comment_id, body.body))
 
 
 @comment_router.delete(
@@ -328,14 +332,16 @@ def edit_comment(
 def delete_comment(
     session_id: str, comment_id: str, identity: AccessIdentity = Depends(public_tier)
 ):
-    principal_id = note_principal(identity)
-    with _database(session_id, identity, include_comments=True) as conn, conn:
-        conn.execute("BEGIN IMMEDIATE")
-        comment = _comment(conn, session_id, comment_id)
-        if not scope_for(identity).admin:
-            _require_author(comment, principal_id)
-        require_note_write(principal_id)
-        notes.delete_comment(conn, comment_id)
+    with _database(session_id, identity, include_comments=True) as conn:
+        _comment(conn, session_id, comment_id)
+        principal_id = note_principal(identity)
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            comment = _comment(conn, session_id, comment_id)
+            if not scope_for(identity).admin:
+                _require_author(comment, principal_id)
+            require_note_write(principal_id)
+            notes.delete_comment(conn, comment_id)
     return Response(status_code=204)
 
 
