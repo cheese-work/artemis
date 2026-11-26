@@ -15,6 +15,7 @@
 """Retention expires a run's media, not the run, when the run has notes (CHE-1467 stage 1)."""
 
 import sqlite3
+import threading
 
 import pytest
 
@@ -241,6 +242,60 @@ async def test_active_download_lease_defers_expiry_to_the_next_sweep(library, ad
         assert files["video"].exists()
         run_leases.release(library.db, lease)
         assert (await _sweep(admin))["media_expired"] == [sid]
+    assert not files["video"].exists()
+
+
+@pytest.mark.asyncio
+async def test_a_lease_taken_after_the_expiry_commit_keeps_the_files_for_the_download(
+    library, admin, monkeypatch
+):
+    sid, _, files = _run(library)
+    real, taken = run_retention.attempt, []
+
+    def lease_first(action, key, *args, **kwargs):  # a download wins the race for the cleanup
+        if action is run_retention._remove_media and not taken:
+            taken.append(run_leases.acquire(library.db, key))
+        return real(action, key, *args, **kwargs)
+
+    monkeypatch.setattr(run_retention, "attempt", lease_first)
+    async with admin:
+        await _enable(admin)
+        await _sweep(admin)
+        assert files["video"].exists() and files["shot"].exists()  # deferred, not read mid-delete
+        assert run_retention._finish_media_expiries() == 0  # still leased
+        assert files["video"].exists()
+        run_leases.release(library.db, taken[0])
+        assert run_retention._finish_media_expiries() == 1
+    assert not files["video"].exists() and not files["shot"].exists()
+
+
+@pytest.mark.asyncio
+async def test_a_lease_cannot_be_admitted_while_the_files_are_being_removed(
+    library, admin, monkeypatch
+):
+    sid, _, files = _run(library)
+    real, admitted = run_retention.run_purge.remove_media, threading.Event()
+    seen: list[bool] = []
+
+    def remove_while_a_download_asks(*args, **kwargs):
+        def download():
+            run_leases.acquire(library.db, sid)
+            admitted.set()
+
+        thread = threading.Thread(target=download)
+        thread.start()
+        seen.append(admitted.wait(0.5))  # blocked on the write lock until the commit
+        try:
+            return real(*args, **kwargs)
+        finally:
+            seen.append(thread)
+
+    monkeypatch.setattr(run_retention.run_purge, "remove_media", remove_while_a_download_asks)
+    async with admin:
+        await _enable(admin)
+        await _sweep(admin)
+    seen[1].join(timeout=15)
+    assert seen[0] is False and admitted.is_set()  # admitted only after the removal committed
     assert not files["video"].exists()
 
 

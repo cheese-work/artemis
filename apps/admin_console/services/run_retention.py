@@ -378,15 +378,25 @@ def _expire_media(session_id: str) -> str | None:
                 or not notes.expire_run_media(conn, session_id)
             ):
                 return None
-    ok, _ = attempt(_remove_media, session_id)
-    return "done" if ok else "deferred"
+    ok, removed = attempt(_remove_media, session_id)
+    return "done" if ok and removed else "deferred"
 
 
-def _remove_media(session_id: str) -> None:
+def _remove_media(session_id: str) -> bool:
+    """Remove the files of an expired run; False (nothing removed) while a download lease is active.
+
+    The lease check, the file removal and the row updates run in one write transaction.
+    A lease is admitted by a write, so it either committed before this transaction began
+    (seen here, the removal waits for the next sweep) or waits for this commit (the files
+    are gone, as the tombstones already say). Neither path reads files while they go.
+    """
     db_path, traces = library_paths()
-    names = run_purge.remove_media(db_path, traces, session_id, logs=False)
     with db_session(db_path) as conn:
+        run_leases.begin_immediate(conn)
         with conn:
+            if run_leases.is_leased(conn, session_id):
+                return False
+            names = run_purge.remove_media(db_path, traces, session_id, logs=False)
             for column in ("pre_image_name", "post_image_name"):
                 conn.executemany(
                     f"UPDATE steps SET {column} = NULL WHERE session_id = ? AND {column} = ?",
@@ -396,6 +406,7 @@ def _remove_media(session_id: str) -> None:
             conn.execute(
                 "UPDATE run_media_expiry SET files_removed = 1 WHERE session_id = ?", (session_id,)
             )
+    return True
 
 
 def _finish_media_expiries() -> int:
@@ -409,9 +420,8 @@ def _finish_media_expiries() -> int:
             for row in conn.execute(
                 "SELECT session_id FROM run_media_expiry WHERE files_removed = 0"
             )
-            if not run_leases.is_leased(conn, row[0])
         ]
-    return sum(attempt(_remove_media, session_id)[0] for session_id in due)
+    return sum(attempt(_remove_media, session_id) == (True, True) for session_id in due)
 
 
 def enforce() -> dict[str, Any]:
