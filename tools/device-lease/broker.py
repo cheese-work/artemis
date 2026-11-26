@@ -797,8 +797,11 @@ class Broker:
         try:
             if json.loads(path.read_text()) == owner:
                 path.unlink()
-        except (OSError, ValueError):
-            pass
+        except (FileNotFoundError, ValueError):
+            pass  # already gone, or not a lock this lease installed
+        except OSError as exc:
+            # The owned lock may remain: do not let release complete over it.
+            raise Refused("execution_lock_cleanup_failed") from exc
 
     def revoke(self, lease_id, *, actor, role):
         """Trusted control-plane entry point. The caller authenticates role; no holder RPC."""

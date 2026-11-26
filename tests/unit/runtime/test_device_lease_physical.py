@@ -9,6 +9,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -394,6 +395,126 @@ class PhysicalTransferTests(unittest.TestCase):
         with patch("broker.process_identity", side_effect=ProcessLookupError):
             self.assertEqual(self.release()["state"], "released")
         self.assertTrue(path.exists())
+
+    def paused_transfer(self):
+        """Pause the transfer inside its transaction, under the admission guard."""
+        inside, resume = threading.Event(), threading.Event()
+
+        def pause(name):
+            if name == "acquire:device":
+                inside.set()
+                self.assertTrue(resume.wait(10), "fixture never resumed the transfer")
+
+        self.broker.boundary = pause
+        pool = ThreadPoolExecutor(4)
+        self.addCleanup(pool.shutdown, wait=True)
+        self.addCleanup(resume.set)
+        transfer = pool.submit(self.transfer)
+        self.assertTrue(inside.wait(10), "transfer never reached its transaction")
+        return pool, transfer, resume
+
+    def test_acquire_racing_a_paused_transfer_waits_then_never_takes_the_device(self):
+        pool, transfer, resume = self.paused_transfer()
+        racer = pool.submit(
+            lambda: self.take(device_id="a", run_id="run-9", idempotency_key="race")
+        )
+        threading.Event().wait(0.3)
+        self.assertFalse(racer.done(), "acquire ran inside the transfer transaction")
+        resume.set()
+        group = transfer.result(timeout=10)
+        with self.assertRaises(Refused) as caught:
+            racer.result(timeout=10)
+        self.assertEqual(caught.exception.code, "device_busy")
+        self.assertEqual(self.claims(), [])
+        self.assertEqual(self.groups(), 1)
+        self.assertEqual(len(self.receipts()), 1)
+        self.assertEqual(
+            self.broker.status(lease_id=group["lease_id"], principal="agent", run_id="run-1")[
+                "state"
+            ],
+            "active",
+        )
+
+    def test_ticket_claim_racing_a_paused_transfer_gets_only_its_own_device(self):
+        hold = self.take(device_id="b", run_id="run-7", idempotency_key="hold-b")
+        busy = self.refused(
+            "device_busy", lambda: self.take(device_id="b", run_id="wait", idempotency_key="q")
+        )
+        ticket_id = busy.details["ticket"]["ticket_id"]
+        self.broker.park(
+            ticket_id=ticket_id,
+            principal="agent",
+            agent_id="agent",
+            issue_id="CHE-fixture",
+            run_id="wait",
+        )
+        with sqlite3.connect(self.path) as conn:  # the holder's verified release, simulated
+            conn.execute(
+                "UPDATE broker_groups SET state='released' WHERE lease_id=?", (hold["lease_id"],)
+            )
+        offered = self.broker.ticket_status(
+            ticket_id=ticket_id, principal="agent", agent_id="agent", issue_id="CHE-fixture"
+        )
+        self.assertEqual(offered["state"], "offered")
+        pool, transfer, resume = self.paused_transfer()
+        claimed = pool.submit(
+            lambda: self.broker.claim(
+                ticket_id=ticket_id,
+                principal="agent",
+                agent_id="agent",
+                issue_id="CHE-fixture",
+                run_id="successor",
+                binding=process_identity(os.getpid()),
+                idempotency_key="claim-b",
+            )
+        )
+        threading.Event().wait(0.3)
+        self.assertFalse(claimed.done(), "ticket claim ran inside the transfer transaction")
+        resume.set()
+        group = transfer.result(timeout=10)
+        lease = claimed.result(timeout=10)
+        self.assertNotEqual(lease["lease_id"], group["lease_id"])
+        self.assertEqual([d["device_id"] for d in lease["devices"]], ["b"])
+        self.assertEqual(self.claims(), [])
+        self.assertEqual(len(self.receipts()), 1)
+
+    def test_foreign_sdk_lock_writer_racing_a_paused_transfer_waits_for_the_guard(self):
+        pool, transfer, resume = self.paused_transfer()
+        foreign = self.locks / "artemis-device-usb-a.lock"
+
+        def write_foreign_lock():
+            with self.guard:  # Artemis lock writers take this guard before writing.
+                foreign.write_text(json.dumps(dict(pid=1, token="f" * 32, device_id="usb-a")))
+
+        racer = pool.submit(write_foreign_lock)
+        threading.Event().wait(0.3)
+        self.assertFalse(racer.done(), "foreign lock writer ran inside the transfer transaction")
+        self.assertFalse(foreign.exists())
+        resume.set()
+        group = transfer.result(timeout=10)
+        racer.result(timeout=10)
+        # The transfer won the guard first: the lease exists and the later foreign lock
+        # now blocks SDK access under it instead of being replaced.
+        self.assertEqual(group["state"], "active")
+        self.assertEqual(self.claims(), [])
+        self.assertEqual(self.groups(), 1)
+        self.assertTrue(foreign.exists())
+
+    def test_release_surfaces_a_cleanup_failure_and_keeps_the_lease(self):
+        self.sdk()
+        self.assertTrue(self.attempt())
+        path = self.lock.path
+        self.verifying()
+        with (
+            patch("broker.process_identity", side_effect=ProcessLookupError),
+            patch.object(Path, "unlink", side_effect=PermissionError("fixture")),
+        ):
+            self.refused("execution_lock_cleanup_failed", self.release)
+        self.assertTrue(path.exists())
+        self.assertEqual(self.broker.status(**self.owner())["state"], "verifying")
+        with patch("broker.process_identity", side_effect=ProcessLookupError):
+            self.assertEqual(self.release()["state"], "released")
+        self.assertFalse(path.exists())
 
     # -- CLI ------------------------------------------------------------------------------
 
