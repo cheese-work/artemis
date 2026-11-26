@@ -27,5 +27,7 @@ Error codes are stable. Error details do not print credentials or raw server res
 | SQH-E207 | Selector matches more than one device (exit 3); use the `id` from `devices --json`. |
 | SQH-E301 | No tunnel adapter was supplied; an unwired core cannot activate a service. Production commands supply the Go peer adapter. |
 | SQH-E302 | Artifact staged only; activation requires the B3a-3 launcher. |
+| SQH-E303 | Launcher refused a version: not installed, invalid version string, or already installed with different bytes. |
+| SQH-E304 | Launcher state (`current.json`, `update-pending.json`) is missing, unreadable or from another contract; the launcher fails closed. Reinstall the agent. |
 | SQH-E401 | User service failure; inspect service status and user-session support. |
 | SQH-E402 | Windows lifecycle/protected enrollment state is deferred to B3b. |
