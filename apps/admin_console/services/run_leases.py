@@ -57,6 +57,10 @@ def _active(conn: sqlite3.Connection, session_id: str) -> int:
     ).fetchone()[0]
 
 
+def is_leased(conn: sqlite3.Connection, session_id: str) -> bool:
+    return _active(conn, session_id) > 0
+
+
 def acquire(db_path, session_id: str) -> str:
     lease_id = uuid.uuid4().hex
     with db_session(db_path) as conn:

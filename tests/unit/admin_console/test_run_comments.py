@@ -34,7 +34,7 @@ def test_upgrade_from_revision_one_preserves_notes_for_the_old_reader(library):
         )
         old_schema = dict(conn.execute("SELECT name, sql FROM sqlite_master"))
 
-    assert notes.migrate(library.db).applied == (2,)
+    assert notes.migrate(library.db).applied == tuple(range(2, len(notes.REVISIONS) + 1))
     assert schema_revisions.apply(library.db, "notes", revision_one).applied == ()
 
     with closing(sqlite3.connect(library.db)) as conn:
@@ -42,7 +42,7 @@ def test_upgrade_from_revision_one_preserves_notes_for_the_old_reader(library):
         assert {name: new_schema[name] for name in old_schema} == old_schema
         assert conn.execute(
             "SELECT revision FROM schema_revisions WHERE module = 'notes'"
-        ).fetchone() == (2,)
+        ).fetchone() == (len(notes.REVISIONS),)
         index_columns = conn.execute("PRAGMA index_info(idx_run_comments_session)")
         assert [column[2] for column in index_columns] == ["session_id", "created_at"]
         assert notes.get_annotation(conn, annotation.annotation_id) == annotation

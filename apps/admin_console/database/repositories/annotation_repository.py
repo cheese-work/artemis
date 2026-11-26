@@ -69,6 +69,16 @@ CREATE TABLE run_comments (
 )""",
         "CREATE INDEX idx_run_comments_session ON run_comments (session_id, created_at)",
     ),
+    (
+        # A run whose media expired but whose notes stay (CHE-1467). files_removed is 0
+        # until the files are gone, so a crash between the two is finished by a later sweep.
+        """
+CREATE TABLE run_media_expiry (
+    session_id TEXT PRIMARY KEY,
+    expired_at REAL NOT NULL,
+    files_removed INTEGER NOT NULL DEFAULT 0 CHECK (files_removed IN (0, 1))
+)""",
+    ),
 )
 
 
@@ -118,7 +128,7 @@ def migrate(db_path: str | Path) -> schema_revisions.RevisionReport:
     """
     report = schema_revisions.apply(db_path, MODULE, REVISIONS)
     with closing(sqlite3.connect(db_path, timeout=30.0)) as conn, conn:
-        for table in ("run_annotations", "evidence_tombstones", "run_comments"):
+        for table in ("run_annotations", "evidence_tombstones", "run_comments", "run_media_expiry"):
             conn.execute(
                 f"DELETE FROM {table} WHERE session_id NOT IN (SELECT session_id FROM sessions)"
             )
@@ -193,6 +203,26 @@ def tombstone_evidence(
         (session_id, kind, evidence_id, time.time()),
     )
     conn.commit()
+
+
+def expire_run_media(conn: sqlite3.Connection, session_id: str) -> bool:
+    """Tombstone every step and recording of the run and record the expiry; the caller commits.
+
+    False when the run's media already expired.
+    """
+    now = time.time()
+    recorded = conn.execute(
+        "INSERT OR IGNORE INTO run_media_expiry (session_id, expired_at) VALUES (?, ?)",
+        (session_id, now),
+    ).rowcount
+    conn.execute(
+        "INSERT OR IGNORE INTO evidence_tombstones (session_id, kind, evidence_id, expired_at) "
+        "SELECT session_id, 'step', step_id, ? FROM steps WHERE session_id = ? "
+        "UNION ALL SELECT session_id, 'recording', video_id, ? FROM video_recordings "
+        "WHERE session_id = ?",
+        (now, session_id, now, session_id),
+    )
+    return recorded > 0
 
 
 def recording_evidence(conn: sqlite3.Connection, session_id: str, recording_id: str):
