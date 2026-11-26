@@ -860,6 +860,33 @@ async def test_status_reports_external_global_owner_without_ipc_connection():
 
 
 @pytest.mark.asyncio
+async def test_status_queue_entries_carry_their_device_queue_position():
+    web_ticket = DeviceExecutionLock.reserve("web", "d1", session_id="web-run")
+    external_ticket = DeviceExecutionLock.reserve("sdk", "d1", session_id="sdk-run")
+    state.queue_items.extend(
+        [
+            {"session_id": "web-run", "status": "pending", "queue_ticket": web_ticket},
+            {"session_id": "no-ticket", "status": "pending", "queue_ticket": None},
+        ]
+    )
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch("apps.admin_console.routers.tasks.session_repo") as repo,
+        patch("apps.admin_console.routers.tasks.model_service") as models,
+    ):
+        repo.get_latest_session.return_value = None
+        repo.get_session_by_id.return_value = None
+        models.get_active_model_info.return_value = None
+        result = await get_status(SYSTEM_PRINCIPAL)
+
+    positions = DeviceExecutionLock.queue_positions()
+    assert positions == {web_ticket: 1, external_ticket: 2}
+    by_sid = {entry["session_id"]: entry["queue_position"] for entry in result["queue"]}
+    assert by_sid == {"web-run": 1, "no-ticket": None, "sdk-run": 2}
+    assert all("queue_position" not in item for item in state.queue_items)
+
+
+@pytest.mark.asyncio
 async def test_cancel_task_triggers_next_pending_task(mocked_session_repo):
     executed_goals = []
 

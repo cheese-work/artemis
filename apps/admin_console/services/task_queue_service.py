@@ -2786,6 +2786,19 @@ class TaskQueueService:
         if item not in state.queue_items:  # stopped while we waited
             return True
         item["status"] = "pending"
+        # Back to the enqueue time every other pending row carries, not the launch time.
+        if item.get("created_at") is not None:
+            item["start_time"] = item["created_at"]
+        else:
+            item.pop("start_time", None)
+        cls._broadcast_event(
+            "session_requeued",
+            {
+                "session_id": sid,
+                "device_serial": item.get("device_serial"),
+                "queue_position": DeviceExecutionLock.queue_positions().get(item["queue_ticket"]),
+            },
+        )
         state.wake_event.set()
         return True
 

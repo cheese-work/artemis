@@ -446,6 +446,36 @@ class DeviceExecutionLock:
         return None
 
     @classmethod
+    def queue_positions(cls) -> dict[str, int]:
+        """Ticket token -> 1-based rank in its device queue, live tickets only.
+
+        Built from ``_build_device_queue``, the one ordering ``acquire`` uses. The
+        run that holds a lock has no ticket, so rank 1 is the next to start.
+        """
+        queue_dir = get_temp_dir("device-locks") / "artemis-global-device.queue"
+        if not queue_dir.exists():
+            return {}
+        wait_files = sorted(queue_dir.glob("*.wait"))
+        owners = {path: cls._read_owner(path) for path in wait_files}
+        targets = {
+            cls._normalize_lock_id(o.device_id, o.lock_scope): o.lock_scope
+            for o in owners.values()
+            if o is not None and cls._normalize_device_id(o.device_id) not in ("pending", "any")
+        }
+        positions: dict[str, int] = {}
+        for lock_id in sorted(targets):
+            rank = 0
+            for path in cls._build_device_queue(
+                wait_files, target_lock_id=lock_id, target_scope=targets[lock_id]
+            ):
+                owner = owners.get(path)
+                if owner is None or owner.token in positions or not cls._owner_is_alive(owner):
+                    continue
+                rank += 1
+                positions[owner.token] = rank
+        return positions
+
+    @classmethod
     def cancel_reservation(cls, token: str | None) -> bool:
         """Remove a pending queue ticket. Active execution leases are untouched."""
         if not token:

@@ -445,6 +445,56 @@ def test_queue_head_token_skips_dead_owners_and_other_scopes():
     assert head is not None and head != first
 
 
+def test_queue_positions_rank_each_device_queue_in_reserve_order():
+    a = [DeviceExecutionLock.reserve("t", "A") for _ in range(2)]
+    b1 = DeviceExecutionLock.reserve("t", "B")
+    a.append(DeviceExecutionLock.reserve("t", "A"))
+    b2 = DeviceExecutionLock.reserve("t", "B")
+
+    assert DeviceExecutionLock.queue_positions() == {
+        a[0]: 1,
+        a[1]: 2,
+        a[2]: 3,
+        b1: 1,
+        b2: 2,
+    }
+
+
+def test_queue_positions_skip_dead_owners(tmp_path):
+    dead = DeviceExecutionLock.reserve("t", "A")
+    live = [DeviceExecutionLock.reserve("t", "A") for _ in range(2)]
+    dead_file = _queue_files(tmp_path)[0]
+    payload = json.loads(dead_file.read_text(encoding="utf-8"))
+    payload["pid"] = 2**22 + 12345
+    dead_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    positions = DeviceExecutionLock.queue_positions()
+
+    assert dead not in positions
+    assert positions == {live[0]: 1, live[1]: 2}
+
+
+def test_queue_positions_do_not_count_the_run_that_holds_the_lock():
+    head = DeviceExecutionLock.reserve("t", "A")
+    rest = [DeviceExecutionLock.reserve("t", "A") for _ in range(2)]
+    holder = DeviceExecutionLock("A", "t", head)
+    holder.acquire(blocking=False)
+    try:
+        assert DeviceExecutionLock.queue_positions() == {rest[0]: 1, rest[1]: 2}
+    finally:
+        holder.release()
+
+
+def test_queue_positions_park_pending_tickets_once():
+    pending = DeviceExecutionLock.reserve("t")  # device "pending", reserved first
+    on_a = DeviceExecutionLock.reserve("t", "A")
+
+    assert DeviceExecutionLock.queue_positions() == {pending: 1, on_a: 2}
+
+    DeviceExecutionLock.cancel_reservation(on_a)
+    assert DeviceExecutionLock.queue_positions() == {}  # nothing to park on
+
+
 def test_owner_lock_waits_for_shared_admission_guard(tmp_path, monkeypatch):
     """CHE-5297: the DLP-1 broker and Artemis lock writers share one exclusion."""
     import fcntl

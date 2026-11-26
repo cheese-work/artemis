@@ -122,6 +122,16 @@ def _row(sid, device="d1", host=HOST_A, ticket=None):
     }
 
 
+def _capture_events(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        TaskQueueService,
+        "_broadcast_event",
+        classmethod(lambda cls, event, data, delivered=None: events.append((event, data)) or True),
+    )
+    return events
+
+
 def _statuses():
     return {i["session_id"]: i["status"] for i in state.queue_items}
 
@@ -542,12 +552,21 @@ async def test_a_nacked_start_requeues_at_its_original_position_and_ticket(runs,
         for i in (1, 2, 3)
     ]
     state.queue_items.extend(_row(f"r{i}", f"d{i}", ticket=tickets[i - 1]) for i in (1, 2, 3))
+    for row in state.queue_items:  # as enqueue sets them
+        row["created_at"] = row["start_time"] = 1000.0 + int(row["session_id"][1:])
     names_before = _ticket_names()
     await runs.tick()
     assert runs.started == ["r1", "r2", "r3"]
+    state.queue_items[1]["start_time"] = 2000.0  # _begin_task_run stamps the launch time
+    events = _capture_events(monkeypatch)
 
     host_admission.request_barrier(HOST_A)  # the agent raises the barrier, then NACKs r2
     assert await TaskQueueService.requeue_starting("r2") is True
+
+    assert state.queue_items[1]["start_time"] == state.queue_items[1]["created_at"] == 1002.0
+    assert events == [
+        ("session_requeued", {"session_id": "r2", "device_serial": "d2", "queue_position": 1})
+    ]
 
     assert [i["session_id"] for i in state.queue_items] == ["r1", "r2", "r3"]
     assert _statuses() == {"r1": "starting", "r2": "pending", "r3": "starting"}
@@ -595,22 +614,28 @@ async def test_nack_after_the_worker_spawned_is_refused_and_keeps_the_run(monkey
 
 
 @pytest.mark.asyncio
-async def test_requeue_is_refused_without_a_ticket_to_keep(runs):
+async def test_requeue_is_refused_without_a_ticket_to_keep(runs, monkeypatch):
     _host_agent()
     state.queue_items.append(_row("r1"))
     await runs.tick()
+    state.queue_items[0]["start_time"] = 5.0
+    events = _capture_events(monkeypatch)
 
     assert await TaskQueueService.requeue_starting("r1") is False
     assert _statuses() == {"r1": "starting"}
+    assert events == [] and state.queue_items[0]["start_time"] == 5.0
 
 
 @pytest.mark.asyncio
-async def test_requeue_ignores_rows_that_are_not_starting(runs):
+async def test_requeue_ignores_rows_that_are_not_starting(runs, monkeypatch):
     _host_agent()
     state.queue_items.append(_row("w1"))
+    state.queue_items[0]["start_time"] = 5.0
+    events = _capture_events(monkeypatch)
 
     assert await TaskQueueService.requeue_starting("w1") is False
     assert await TaskQueueService.requeue_starting("missing") is False
+    assert events == [] and state.queue_items[0]["start_time"] == 5.0
 
 
 # -- cancel-queued ----------------------------------------------------------
