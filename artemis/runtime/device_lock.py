@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -31,6 +32,8 @@ import uuid
 
 from artemis.config.paths import get_temp_dir
 from artemis.runtime.process_probe import pid_is_alive
+
+logger = logging.getLogger(__name__)
 
 
 LEASE_HANDOFF_ENV = "ARTEMIS_DEVICE_LEASE_HANDOFF"
@@ -90,6 +93,8 @@ class DeviceExecutionLock:
     """
 
     _MALFORMED_LOCK_GRACE_SECONDS = 5.0
+    _PUBLICATION_TEMP_MAX_AGE_SECONDS = 60.0
+    _link_warned = False  # one hard-link fallback warning per process
     _DEFAULT_POLL_INTERVAL_SECONDS = 0.1
     QUEUE_TICKET_ENV = "ARTEMIS_DEVICE_QUEUE_TICKET"
     # CHE-5297: path of the DLP-1 broker's shared claim guard (flock), when composed.
@@ -293,6 +298,45 @@ class DeviceExecutionLock:
         return True
 
     @classmethod
+    def _publish_exclusive(cls, path: Path, payload: dict) -> bool:
+        """Create ``path`` with its whole record, or return False if it exists.
+
+        The record is written to a temp file first and hard-linked into place, so
+        no reader (or stale-record reaper) ever sees an empty ``path``. No fsync:
+        the record only has to be whole for readers on this machine.
+        """
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        temp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+        fd = os.open(temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+            try:
+                os.link(temp_path, path)
+            except FileExistsError:
+                return False
+            except OSError:
+                if not DeviceExecutionLock._link_warned:
+                    DeviceExecutionLock._link_warned = True
+                    logger.warning(
+                        "Hard links unavailable in %s; publishing lock records non-atomically",
+                        path.parent,
+                    )
+                try:
+                    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                except FileExistsError:
+                    return False
+                try:
+                    os.write(fd, data)
+                finally:
+                    os.close(fd)
+            return True
+        finally:
+            cls._safe_unlink(temp_path)
+
+    @classmethod
     def _ticket_targets_device(
         cls,
         ticket_owner: DeviceLockOwner,
@@ -416,15 +460,7 @@ class DeviceExecutionLock:
         )
         for _ in range(8):
             path = queue_dir / f"{time.time_ns():020d}-{token}.wait"
-            try:
-                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                continue
-            else:
-                try:
-                    os.write(fd, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-                finally:
-                    os.close(fd)
+            if cls._publish_exclusive(path, payload):
                 return token
         raise DeviceBusyError("Could not reserve a position in the Artemis device queue.")
 
@@ -722,9 +758,7 @@ class DeviceExecutionLock:
         )
         if self._webusb_claim_alias is not None:
             owner_payload["webusb_claim_alias"] = self._webusb_claim_alias
-        try:
-            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
+        if not self._publish_exclusive(self.path, owner_payload):
             current_owner = self._read_owner(self.path)
             if (
                 current_owner is not None
@@ -738,10 +772,6 @@ class DeviceExecutionLock:
                 return True
             self._remove_stale_lock()
             return False
-        try:
-            os.write(fd, json.dumps(owner_payload, ensure_ascii=False).encode("utf-8"))
-        finally:
-            os.close(fd)
         self._acquired = True
         return True
 
@@ -1224,4 +1254,13 @@ class DeviceExecutionLock:
                             continue
                     if cls._safe_unlink(path):
                         removed += 1
+
+        # Temp records of a writer that died before linking them into place.
+        for folder in [lock_dir, *(d for d in lock_dir.glob("*.queue") if d.is_dir())]:
+            for path in folder.glob("*.tmp"):
+                try:
+                    if time.time() - path.stat().st_mtime > cls._PUBLICATION_TEMP_MAX_AGE_SECONDS:
+                        cls._safe_unlink(path)
+                except OSError:
+                    continue
         return removed
