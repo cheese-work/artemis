@@ -230,7 +230,10 @@ class RecoveryTests(unittest.TestCase):
         self.release(group)
         self.broker.maintain()
         self.assertEqual(self.state(group), "verifying")
-        self.assertEqual([c[1] for c in self.io.calls if c[0] == "undo"], list(reversed(changes)))
+        # The broker also journals a root-only `work` manifest at grant; it is undone last.
+        undone = [c[1] for c in self.io.calls if c[0] == "undo"]
+        self.assertEqual([c for c in undone if c["kind"] != "work"], list(reversed(changes)))
+        self.assertEqual([c["kind"] for c in undone][-1:], ["work"])
         self.refused(
             "leader_required",
             lambda: self.broker.verify_release(
@@ -271,7 +274,10 @@ class RecoveryTests(unittest.TestCase):
                     )
         self.release(group)
         self.broker.maintain()
-        self.assertEqual(self.io.calls, [("fence", "run-1")])
+        self.assertEqual(
+            [c for c in self.io.calls if c[0] != "undo" or c[1]["kind"] != "work"],
+            [("fence", "run-1")],
+        )
 
     def test_audit_retries_after_export_failure_without_duplicate_or_lost_commit(self):
         import audit

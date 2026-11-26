@@ -1777,6 +1777,30 @@ class Broker:
             "INSERT INTO broker_access VALUES (?,?,?)",
             (lease_id, "starting" if starting else "work", json.dumps(proof) if proof else None),
         )
+        if not starting and binding["mode"] in {"local", "managed"}:
+            # Ordinary run: journal the broker-attested root as the `work` manifest, so
+            # fencing needs no leader-socket record-change. Unknown descendants or
+            # forwards still fail closed in OwnedRecovery.fence.
+            root = {
+                "mode": "local",
+                **{k: binding[k] for k in ("pid", "process_start", "boot_id")},
+            }
+            for device_id in devices:
+                conn.execute(
+                    "INSERT INTO broker_changes(lease_id,change) VALUES (?,?)",
+                    (
+                        lease_id,
+                        json.dumps(
+                            dict(
+                                kind="work",
+                                device_id=self._canonical(device_id) or device_id,
+                                complete=True,
+                                processes=[root],
+                                forwards=[],
+                            )
+                        ),
+                    ),
+                )
         if transfer is not None:
             from device_lease.claims import transfer_claim
 

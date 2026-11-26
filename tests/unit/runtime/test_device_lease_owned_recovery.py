@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -189,6 +190,51 @@ class OwnedRecoveryTests(unittest.TestCase):
             self.assertEqual(
                 conn.execute("SELECT state FROM broker_groups").fetchone()[0], "verifying"
             )
+
+    def release_and_maintain(self, group):
+        adapter = self.adapter()
+        self.broker.recovery_io, self.broker.recovery_owner, self.broker.ops_issue = (
+            adapter,
+            "ops",
+            "CHE-fixture",
+        )
+        with (
+            patch.object(adapter, "_daemon_pid", return_value=os.getpid()),
+            patch.object(adapter, "_adb", return_value=""),
+        ):
+            self.broker.release(lease_id=group["lease_id"], principal="agent", run_id="run-1")
+            self.broker.maintain()
+        with sqlite3.connect(self.path) as conn:
+            return conn.execute("SELECT state FROM broker_groups").fetchone()[0]
+
+    def test_ordinary_run_without_record_change_reaches_verifying(self):
+        worker, identity = self.worker()
+        group = self.take(device_id="a", binding=identity)  # no record_change call
+        self.assertEqual(self.release_and_maintain(group), "verifying")
+        worker.wait(timeout=5)
+
+    def test_run_without_a_journaled_manifest_still_quarantines(self):
+        worker, identity = self.worker()
+        group = self.take(device_id="a", binding=identity)
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("DELETE FROM broker_changes")
+        self.assertEqual(self.release_and_maintain(group), "quarantine")
+        self.assertIsNone(worker.poll())
+
+    def test_ordinary_run_with_unknown_child_still_quarantines(self):
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import subprocess,sys,time;"
+                "subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']);"
+                "time.sleep(60)",
+            ]
+        )
+        self.addCleanup(child.kill)
+        group = self.take(device_id="a", binding=fixtures.process_identity(child.pid))
+        time.sleep(0.5)
+        self.assertEqual(self.release_and_maintain(group), "quarantine")
 
     def test_manifest_without_binding_root_refuses_and_leaves_root_alive(self):
         worker, identity = self.worker()

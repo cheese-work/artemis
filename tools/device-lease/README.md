@@ -908,6 +908,12 @@ to execute, the owner journals one complete `work` manifest per leased device:
 ],"forwards":[{"direction":"reverse","local":"tcp:8765","remote":"tcp:8766"}]}
 ```
 
+For an ordinary local or managed run the broker journals a root-only `work`
+manifest at grant time (the attested binding PID/start/boot, no forwards), so no
+leader-socket `record-change` is needed to reach `verifying`. A manifest the owner
+records later for the same device supersedes it. A missing manifest, unknown
+descendant or forward, or a missing root still quarantines (CHE-10085).
+
 Spawn a worker paused at its own execution barrier, record its exact identity,
 then permit execution. The complete manifests must include the binding root's
 exact PID/start/boot identity. An omitted or mismatched root refuses recovery.
