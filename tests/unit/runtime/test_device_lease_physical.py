@@ -413,13 +413,34 @@ class PhysicalTransferTests(unittest.TestCase):
         self.assertTrue(inside.wait(10), "transfer never reached its transaction")
         return pool, transfer, resume
 
+    def contend(self, pool, operation):
+        """Start a competitor and return only once it is blocked on the held admission guard.
+
+        The guard's in-process lock is observed: the competitor signals just before it
+        waits on that lock, which the paused transfer holds, so it cannot have passed it.
+        """
+        entered, real = threading.Event(), self.guard._lock
+
+        class Observed:
+            def acquire(self, *args, **kwargs):
+                entered.set()
+                return real.acquire(*args, **kwargs)
+
+            def release(self):
+                return real.release()
+
+        self.guard._lock = Observed()
+        self.addCleanup(setattr, self.guard, "_lock", real)
+        racer = pool.submit(operation)
+        self.assertTrue(entered.wait(10), "competitor never reached the admission guard")
+        self.assertFalse(racer.done(), "competitor ran inside the transfer transaction")
+        return racer
+
     def test_acquire_racing_a_paused_transfer_waits_then_never_takes_the_device(self):
         pool, transfer, resume = self.paused_transfer()
-        racer = pool.submit(
-            lambda: self.take(device_id="a", run_id="run-9", idempotency_key="race")
+        racer = self.contend(
+            pool, lambda: self.take(device_id="a", run_id="run-9", idempotency_key="race")
         )
-        threading.Event().wait(0.3)
-        self.assertFalse(racer.done(), "acquire ran inside the transfer transaction")
         resume.set()
         group = transfer.result(timeout=10)
         with self.assertRaises(Refused) as caught:
@@ -457,7 +478,8 @@ class PhysicalTransferTests(unittest.TestCase):
         )
         self.assertEqual(offered["state"], "offered")
         pool, transfer, resume = self.paused_transfer()
-        claimed = pool.submit(
+        claimed = self.contend(
+            pool,
             lambda: self.broker.claim(
                 ticket_id=ticket_id,
                 principal="agent",
@@ -466,10 +488,8 @@ class PhysicalTransferTests(unittest.TestCase):
                 run_id="successor",
                 binding=process_identity(os.getpid()),
                 idempotency_key="claim-b",
-            )
+            ),
         )
-        threading.Event().wait(0.3)
-        self.assertFalse(claimed.done(), "ticket claim ran inside the transfer transaction")
         resume.set()
         group = transfer.result(timeout=10)
         lease = claimed.result(timeout=10)
@@ -486,9 +506,7 @@ class PhysicalTransferTests(unittest.TestCase):
             with self.guard:  # Artemis lock writers take this guard before writing.
                 foreign.write_text(json.dumps(dict(pid=1, token="f" * 32, device_id="usb-a")))
 
-        racer = pool.submit(write_foreign_lock)
-        threading.Event().wait(0.3)
-        self.assertFalse(racer.done(), "foreign lock writer ran inside the transfer transaction")
+        racer = self.contend(pool, write_foreign_lock)
         self.assertFalse(foreign.exists())
         resume.set()
         group = transfer.result(timeout=10)
