@@ -750,6 +750,8 @@ class Broker:
                 raise Refused("independent_verifier_required")
             if not passed:
                 self._text(self.recovery_owner, self.ops_issue)
+            if group["startup"] is None:
+                self._remove_work_lock(conn, lease_id)
             conn.execute(
                 "INSERT OR REPLACE INTO broker_verifications VALUES (?,?,?)",
                 (lease_id, verifier, evidence),
@@ -774,6 +776,29 @@ class Broker:
             )
             conn.execute("DELETE FROM broker_reconcile WHERE lease_id=?", (lease_id,))
             return self._view(conn, lease_id)
+
+    @staticmethod
+    def _remove_work_lock(conn, lease_id):
+        """Release cleanup for a physical lease's SDK lock: only the file this lease installed,
+        and only once its holder process is gone. A foreign or replaced lock is left alone."""
+        row = conn.execute(
+            "SELECT lock_path,owner,peer FROM broker_avd_work WHERE lease_id=?", (lease_id,)
+        ).fetchone()
+        if row is None:
+            return
+        path, owner, peer = Path(row[0]), json.loads(row[1]), json.loads(row[2])
+        try:
+            observed = process_identity(owner["pid"])
+            alive = all(observed[k] == peer[k] for k in observed if k in peer)
+        except (OSError, ValueError, IndexError):
+            alive = False
+        if alive:
+            raise Refused("execution_lock_busy")
+        try:
+            if json.loads(path.read_text()) == owner:
+                path.unlink()
+        except (OSError, ValueError):
+            pass
 
     def revoke(self, lease_id, *, actor, role):
         """Trusted control-plane entry point. The caller authenticates role; no holder RPC."""
@@ -1398,6 +1423,123 @@ class Broker:
                 starting=True,
             )
 
+    _CONSENT = frozenset(
+        {
+            "claim_id",
+            "owner",
+            "run_id",
+            "census_generation",
+            "reference",
+            "device_id",
+            "serial",
+            "agent_id",
+            "issue_id",
+            "grant_reference",
+        }
+    )
+
+    def transfer_physical(
+        self,
+        *,
+        principal,
+        agent_id,
+        issue_id,
+        run_id,
+        device_id,
+        binding,
+        consent,
+        actor,
+        actor_run_id,
+        idempotency_key,
+        ttl=1800,
+    ):
+        """Owner control only. Move one exact Android claim on a physical device into a lease.
+
+        The claim owner's consent names the claim, device, serial, run, issue, live
+        admission grant and census generation. Nothing else can transfer a claim, and
+        a refusal leaves the claim, the queue and every reservation untouched. `actor`
+        is an unverified label of who operates this call, distinct from the claim owner.
+        """
+        with self.admission_guard():
+            with self.decision("transfer_physical", locals()) as (conn, now, entry):
+                self._require_authority(conn)
+                self._text(principal, agent_id, issue_id, run_id, device_id, idempotency_key)
+                self._text(actor, actor_run_id)
+                self._ttl(ttl)
+                if not isinstance(consent, dict) or set(consent) != self._CONSENT:
+                    raise Refused("invalid_request")
+                if not isinstance(binding, dict) or binding.get("mode") != "managed":
+                    raise Refused("run_not_live")
+                binding = self._binding(binding, run_id, principal, agent_id, issue_id)
+                target = self._canonical(device_id)
+                fingerprint = json.dumps(
+                    ["transfer-physical", target, ttl, agent_id, issue_id, binding, consent],
+                    sort_keys=True,
+                )
+                self._expire(conn, now)
+                replay = self._replay(conn, principal, run_id, idempotency_key, fingerprint)
+                if replay is not None:
+                    return self._decide(entry, self._startup_replay(conn, replay))
+                if self.draining:
+                    raise Refused("draining")
+                if self._admission.unavailable or not self._admission.audit_ok:
+                    raise Refused("admission_unavailable")
+                if conn.execute("SELECT 1 FROM broker_reconcile LIMIT 1").fetchone():
+                    raise Refused("restart_reconcile")
+                device = self.registry.resolve(target) if target else None
+                grant = self._admission.grants.get(target)
+                if (
+                    device is None
+                    or device.kind != "physical"
+                    or device.restricted
+                    or not device.identity_confirmed
+                    or target not in self._candidates(device.pool, target)
+                    or grant is None
+                    or not now < grant["expires_at"]
+                    or (
+                        consent["device_id"],
+                        consent["serial"],
+                        consent["agent_id"],
+                        consent["issue_id"],
+                        consent["grant_reference"],
+                    )
+                    != (target, self.admitted[target], agent_id, issue_id, grant["reference"])
+                ):
+                    raise Refused("claim_handoff_denied")
+                claim = self._claim_transfer(
+                    conn,
+                    now,
+                    target,
+                    {"claim_handoff": consent, "principal": principal, "run_id": run_id},
+                )
+                if claim["reference"] != consent["reference"]:
+                    raise Refused("claim_handoff_denied")
+                # FIFO and reservations stand: never jump a queued or offered ticket.
+                if target in self._occupied(conn) or any(
+                    target in self._ticket_candidates(conn, ticket)
+                    or target in json.loads(ticket["reserved"])
+                    for ticket in self._tickets(conn)
+                ):
+                    raise Refused("device_busy")
+                response = self._grant(
+                    conn,
+                    now,
+                    principal,
+                    run_id,
+                    issue_id,
+                    device.pool,
+                    ttl,
+                    [target],
+                    binding,
+                    agent_id=agent_id,
+                    issue_id=issue_id,
+                    physical=(claim, consent, actor, actor_run_id),
+                )
+                self._record(conn, principal, run_id, idempotency_key, fingerprint, response)
+                self._decide(entry, response)
+        self.boundary("transfer-physical:committed")
+        return response
+
     def launch_startup(self, *, lease_id, principal, run_id):
         """Owner control only; a visible grant reference is never launch authority."""
         from startup import launch
@@ -1688,6 +1830,7 @@ class Broker:
         agent_id,
         issue_id,
         starting=False,
+        physical=None,
     ):
         if self._admission.unavailable or not self._admission.audit_ok:
             raise Refused("admission_unavailable")
@@ -1700,6 +1843,11 @@ class Broker:
             else None
         )
         transfer = self._claim_transfer(conn, now, devices[0], proof) if proof else None
+        consent, actor, actor_run_id = (
+            (proof["claim_handoff"], principal, run_id) if transfer else (None, None, None)
+        )
+        if physical is not None:  # claim, consent and actor already verified by the caller
+            transfer, consent, actor, actor_run_id = physical
         if set(devices) & self._admission.blocked and transfer is None:
             raise Refused("admission_unavailable")
         started, deadline = self._run_budget(conn, now, principal, run_id, pool)
@@ -1781,13 +1929,7 @@ class Broker:
             from device_lease.claims import transfer_claim
 
             transfer_claim(
-                conn,
-                transfer,
-                proof["claim_handoff"],
-                lease_id,
-                now,
-                actor=principal,
-                actor_run_id=run_id,
+                conn, transfer, consent, lease_id, now, actor=actor, actor_run_id=actor_run_id
             )
         response = self._view(conn, lease_id)
         return response

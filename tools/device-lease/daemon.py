@@ -208,6 +208,7 @@ class ControlServer(socketserver.UnixStreamServer):
             "verify-release": self.broker.verify_release,
             "recover-quarantine": self.broker.recover_quarantine,
             "record-change": self.broker.record_change,
+            "transfer-physical": self.broker.transfer_physical,
             "start": self.broker.start,
             "claim-startup": self.broker.claim_startup,
             "launch-startup": self.broker.launch_startup,
@@ -294,6 +295,17 @@ def main(argv=None):
                 "--actor", required=True, help="unverified label of who runs this release"
             )
             owner.add_argument("--actor-run-id", help="unverified run of the actor, if any")
+    transfer = sub.add_parser(
+        "transfer-physical",
+        help="owner control: move one consented Android claim on a physical device into a lease",
+    )
+    for flag in ("principal", "agent-id", "issue-id", "run-id", "device-id", "managed-binding"):
+        transfer.add_argument(f"--{flag}", required=True, dest=flag.replace("-", "_"))
+    transfer.add_argument("--consent-file", type=Path, required=True)
+    transfer.add_argument("--actor", required=True, help="unverified label of who runs this")
+    transfer.add_argument("--actor-run-id", required=True, help="unverified run of the actor")
+    transfer.add_argument("--ttl", type=int, default=1800)
+    transfer.add_argument("--idempotency-key", required=True)
     wait = sub.add_parser("wait", help="one fallback poll, condition wakeup and final comment")
     for flag in ("principal", "agent-id", "issue-id", "ticket", "offer-property-id"):
         wait.add_argument(
@@ -485,7 +497,14 @@ def main(argv=None):
             path = args.pop("change_file")
             _owner_file(path)
             args["change"] = json.loads(path.read_text())
-        if op in {"verify-release", "recover-quarantine", "record-change"}:
+        if op == "transfer-physical":
+            from compose import _owner_file
+
+            path = args.pop("consent_file")
+            _owner_file(path)
+            args["consent"] = json.loads(path.read_text())
+            args["binding"] = {"mode": "managed", "binding_id": args.pop("managed_binding")}
+        if op in {"verify-release", "recover-quarantine", "record-change", "transfer-physical"}:
             if control_socket is None:
                 raise ValueError("leader operations need --control-socket")
             response = rpc(control_socket, {"op": op, "args": args})

@@ -1265,6 +1265,66 @@ explicit cooperative role check, not a credential. The in-process Broker's
 historical default is retained for callers outside live composition; production
 composition always requires a configured identity.
 
+### Physical claim-to-lease transfer (CHE-10283)
+
+A physical device has no startup proof, so the AVD route above cannot move its
+Android claim into a lease. `transfer-physical` is the owner-control route for
+that case. It runs on the private leader socket only. The holder socket refuses
+it. The AVD path and its `claim_handoff` rules are unchanged.
+
+```
+daemon.py --control-socket CTRL.sock transfer-physical \
+  --principal OWNER --agent-id OWNER --issue-id CHE-123 --run-id RUN \
+  --device-id a --managed-binding BINDING_ID --consent-file consent.json \
+  --actor OPERATOR --actor-run-id OPERATOR_RUN --ttl 1800 --idempotency-key KEY
+```
+
+`consent.json` is owner-only (0600) and holds exactly these keys: `claim_id`,
+`owner`, `run_id`, `census_generation`, `reference`, `device_id`, `serial`,
+`agent_id`, `issue_id` and `grant_reference`. Any missing or extra key refuses.
+The broker moves the claim only when all of these hold under the admission guard:
+
+1. `claim_id`, `owner`, `run_id` and `reference` match the live claim row, and
+   the claim owner is the request principal on the same managed run.
+2. `device_id` is the canonical ID of an unrestricted, identity-confirmed
+   physical device. `serial` is its admitted serial.
+3. `issue_id` and `agent_id` match the request and the live admission window.
+   `grant_reference` is that window's reference, and the window has not expired.
+4. `census_generation` is the current census generation and the census is fresh.
+5. No foreign SDK lock, queued ticket, reservation or other lease holds the
+   device. A queued ticket keeps its FIFO place and the claim stays put.
+
+The claim row, the new lease, the consent record and the `claim_transfer`
+receipt commit in one transaction. A failed or interrupted transaction leaves the
+claim live. A retry with the same `--idempotency-key` returns the same lease. A
+new key cannot transfer the claim twice. The lease expires with the admission
+window and the run budget, whichever is first. It adds no renewal path.
+
+**Actor attribution.** `--actor` and `--actor-run-id` name who ran the command.
+They are stored in the receipt as `actor`, `actor_run_id` and
+`actor_verified=false`, apart from the claim owner (CHE-10235). Nothing
+authenticates them.
+
+**SDK lock.** The launcher sets `ARTEMIS_DEVICE_LEASE_HANDOFF` with `phase` set
+to `work` and `generation` set to the consent `census_generation`. The broker
+checks the managed-run peer, the claim consent, the live admission window and the
+lease endpoint. It then installs the execution lock under the claim guard, and the
+SDK reads it back before it touches the device. A retry from the same peer reuses
+the lock. A second holder is refused. A foreign lock blocks the install. A lease
+alone, or a wrong `generation`, `phase`, `issue_id` or `device_id`, grants no SDK
+access. When the run ends the lease fences, and the SDK revalidation fails.
+
+**Release cleanup.** `verify-release` removes the lock file only if it still
+holds this lease's installed owner and the holder process is gone. A live
+holder blocks release with `execution_lock_busy`. A replaced or foreign lock is
+never touched.
+
+**Trust limit.** Broker, SDK and launcher share one Unix UID. The consent file,
+the actor label and the principal and run fields are cooperative controls, not
+credentials. Any process of that user can write them. The broker defends
+against stale, mismatched and racing requests. It does not defend against a
+hostile same-UID process.
+
 ## Managed Multica host binding (CHE-5868)
 
 Producer contract pin: `cheese-work/multica@6d95bc618617c20baa7e1e2d9ccf9991d9e7d3cc`,
