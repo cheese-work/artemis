@@ -371,12 +371,16 @@ async def test_nack_preserves_a_worker_paused_before_owner_metadata_write(tmp_pa
     thread.start()
     assert lease_created.wait(5)
     old_time = time.time() - DeviceExecutionLock._MALFORMED_LOCK_GRACE_SECONDS - 1
-    os.utime(lock.path, (old_time, old_time))
+    pending = list(lock.path.parent.glob(f"{lock.path.name}.*.tmp"))
+    assert pending
+    assert not lock.path.exists()
+    for record in pending:
+        os.utime(record, (old_time, old_time))
     kills_while_locked = []
     worker.kill.side_effect = lambda: kills_while_locked.append(lock._acquired)
     try:
         first_decision = await TaskQueueService.requeue_starting("r1")
-        file_kept_after_refusal = lock.path.exists()
+        file_kept_after_refusal = all(record.exists() for record in pending)
         allow_write.set()
         assert acquired.wait(5)
         assert lock._acquired
