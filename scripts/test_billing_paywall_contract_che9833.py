@@ -18,7 +18,7 @@ EXPECTED_EVIDENCE = {
     "command_exit_status",
     "timeout_or_completion_disposition",
 }
-KEY_LIKE_VALUE = re.compile(r"\b(?:appl|goog|amzn|amazon|rcb|sk_live)_[A-Za-z0-9_-]{16,}\b")
+KEY_LIKE_VALUE = re.compile(r"\b(?:test|appl|goog|amzn|amazon|rcb|sk_live)_[A-Za-z0-9_-]{16,}\b")
 
 
 class BillingPaywallContractTest(unittest.TestCase):
@@ -52,6 +52,10 @@ class BillingPaywallContractTest(unittest.TestCase):
         self.assertEqual(manifest["revenuecat_test_store"]["entitlement_id"], "premium")
         lookup_method = manifest["customer_lookup_method"]
         self.assertIn("sort by **Last Seen** newest first", text)
+        self.assertIn("sandbox-data view", lookup_method)
+        self.assertIn("sandbox-data view", text)
+        self.assertIn("dashboard environment and filter", lookup_method)
+        self.assertIn("dashboard environment and filter", text)
         for phrase in (
             "unique customer",
             "last-seen time",
@@ -87,21 +91,40 @@ class BillingPaywallContractTest(unittest.TestCase):
             self.assertIn(case["build"], {"configured_test_store", "billing_not_configured"})
         case_c = manifest["cases"]["C"]
         self.assertIn("perform Restore for either identity", case_c["identity_precondition"])
-        self.assertIn("RestoreEmpty message appears", case_c["assertion"])
-        self.assertIn("paywall remains open", case_c["assertion"])
-        self.assertIn("B's recorded customer remains unchanged", case_c["assertion"])
+        self.assertIn("required Active restore result is NOT-RUN", case_c["assertion"])
+        self.assertIn("case C is BLOCKED, never PASS", case_c["assertion"])
+        self.assertNotIn("RestoreEmpty", case_c["assertion"])
+        self.assertIn("No purchases to restore", case_c["supplementary_restore_ui"])
+        self.assertIn("Restore failed. Please try again.", case_c["supplementary_restore_ui"])
+        self.assertEqual(case_c["restore_failure_disposition"], "BLOCKED: infra")
+        self.assertIn("B's recorded ID before and after Restore", case_c["customer_entitlement"])
         self.assertIn(case_c["identity_mismatch_expected"], journey_cases["C"])
         self.assertEqual(case_c["completion_timeout_seconds"], 120)
         self.assertIn("within 120 seconds", journey_cases["C"])
-        self.assertIn("NOT-RUN and BLOCKED", journey_cases["C"])
+        self.assertIn("NOT-RUN", journey_cases["C"])
         self.assertIn(
             "Always attempt Restore",
             manifest["fixture_reset"]["case_C_restore_outcomes"],
         )
         self.assertIn(
-            "RestoreEmpty",
+            "NOT-RUN",
             manifest["fixture_reset"]["case_C_restore_outcomes"],
         )
+        self.assertIn(
+            "No purchases to restore", manifest["fixture_reset"]["case_C_restore_outcomes"]
+        )
+        self.assertIn(
+            "Restore failed. Please try again.",
+            manifest["fixture_reset"]["case_C_restore_outcomes"],
+        )
+        self.assertIn(
+            "NOT-RUN because the anonymous App User ID changed after pm clear", journey_cases["C"]
+        )
+        self.assertIn("case C is BLOCKED, never PASS", journey_cases["C"])
+        self.assertIn("supplementary evidence only", journey_cases["C"])
+        self.assertIn("dashboard Restore Behavior setting", journey_cases["C"])
+        self.assertIn("BLOCKED (infra)", journey_cases["C"])
+        self.assertIn("test", KEY_LIKE_VALUE.pattern)
         self.assertEqual(
             manifest["cases"]["E"]["customer_entitlement"],
             "NOT_APPLICABLE: billing not initialized",
