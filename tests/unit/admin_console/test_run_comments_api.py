@@ -206,3 +206,159 @@ async def test_missing_comments_table_returns_notes_not_ready(comment_run, libra
     async with make_client("qa") as client:
         annotations = await client.get(f"/api/runs/{comment_run}/annotations")
     assert annotations.status_code == 200 and annotations.json() == {"annotations": []}
+
+
+# -- edit and delete (CHE-7704) -----------------------------------------------
+
+
+async def _item(role, method, run, comment_id, **kwargs):
+    async with make_client(role) as client:
+        return await client.request(method, f"/api/runs/{run}/comments/{comment_id}", **kwargs)
+
+
+async def _create(role, run, body="Original"):
+    created = await _call(role, "POST", run, json={"body": body})
+    assert created.status_code == 201, created.text
+    return created.json()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", ["Edited", "<b>x</b>\n  ", "x" * 4000])
+async def test_author_edit_stores_body_verbatim_and_sets_edited_at(comment_run, body):
+    comment = await _create("qa", comment_run)
+    response = await _item("qa", "PATCH", comment_run, comment["comment_id"], json={"body": body})
+    assert response.status_code == 200, response.text
+    edited = response.json()
+    assert edited == {**comment, "body": body, "edited_at": edited["edited_at"]}
+    assert datetime.fromisoformat(edited["edited_at"]).tzinfo == UTC
+    listed = await _call("qa2", "GET", comment_run)
+    assert listed.json() == {"comments": [edited]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["qa2", "admin"])
+async def test_edit_by_non_author_is_refused_even_for_admin(comment_run, role):
+    comment = await _create("qa", comment_run)
+    response = await _item(
+        role, "PATCH", comment_run, comment["comment_id"], json={"body": "Hijacked"}
+    )
+    assert response.status_code == 403, response.text
+    error = response.json()
+    assert error["code"] == "comment_not_permitted"
+    assert error["docs_url"] == f"{notes.DOCS}#comment_not_permitted"
+    assert (await _call("qa", "GET", comment_run)).json() == {"comments": [comment]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"body": ""},
+        {"body": "a\x00b"},
+        {"body": "x" * 4001},
+        {"body": 12},
+        {"body": "text", "author": "forged"},
+    ],
+)
+async def test_invalid_edit_is_rejected_and_not_stored(comment_run, payload):
+    comment = await _create("qa", comment_run)
+    response = await _item("qa", "PATCH", comment_run, comment["comment_id"], json=payload)
+    _assert_invalid(response, 4000)
+    assert (await _call("qa", "GET", comment_run)).json() == {"comments": [comment]}
+
+
+@pytest.mark.asyncio
+async def test_author_delete_removes_the_comment(comment_run):
+    comment = await _create("qa", comment_run)
+    keep = await _create("qa", comment_run, "Keep")
+    response = await _item("qa", "DELETE", comment_run, comment["comment_id"])
+    assert response.status_code == 204 and response.content == b""
+    assert (await _call("qa", "GET", comment_run)).json() == {"comments": [keep]}
+    assert (await _item("qa", "DELETE", comment_run, comment["comment_id"])).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_by_non_author_non_admin_is_refused(comment_run):
+    comment = await _create("qa", comment_run)
+    response = await _item("qa2", "DELETE", comment_run, comment["comment_id"])
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "comment_not_permitted"
+    assert (await _call("qa", "GET", comment_run)).json() == {"comments": [comment]}
+
+
+@pytest.mark.asyncio
+async def test_admin_can_delete_another_principals_comment(comment_run):
+    comment = await _create("qa", comment_run)
+    response = await _item("admin", "DELETE", comment_run, comment["comment_id"])
+    assert response.status_code == 204
+    assert (await _call("qa", "GET", comment_run)).json() == {"comments": []}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+async def test_deleted_run_unknown_comment_and_other_run_comment_are_indistinguishable(
+    comment_run, library, method
+):
+    other_run = library.seed()
+    with sqlite3.connect(library.db) as conn:
+        conn.execute(
+            "UPDATE run_meta SET requested_by = 'qa@example.com' WHERE session_id = ?",
+            (other_run,),
+        )
+    mine = await _create("qa", comment_run)
+    theirs = await _create("qa", other_run, "Other run")
+    payload = {"json": {"body": "Edited"}} if method == "PATCH" else {}
+    unknown = await _item("qa", method, comment_run, "cmt_unknown", **payload)
+    cross_run = await _item("qa", method, comment_run, theirs["comment_id"], **payload)
+    prefix = await _item("qa", method, comment_run[:8], mine["comment_id"], **payload)
+    with sqlite3.connect(library.db) as conn:
+        conn.execute("UPDATE run_meta SET deleted_at = 1 WHERE session_id = ?", (comment_run,))
+    deleted = await _item("qa", method, comment_run, mine["comment_id"], **payload)
+    responses = (deleted, unknown, cross_run, prefix)
+    assert [r.status_code for r in responses] == [404] * 4, [r.text for r in responses]
+    assert all(r.json() == deleted.json() for r in responses)
+    assert deleted.json()["code"] == "run_not_visible"
+    assert library.count("run_comments", comment_run) == 1
+    assert (await _call("qa", "GET", other_run)).json() == {"comments": [theirs]}
+
+
+@pytest.mark.asyncio
+async def test_edit_and_delete_count_against_the_shared_write_budget(comment_run, monkeypatch):
+    monkeypatch.setattr(config, "NOTE_WRITE_LIMIT", 3)
+    comment = await _create("qa", comment_run)
+    cid = comment["comment_id"]
+    edit = await _item("qa", "PATCH", comment_run, cid, json={"body": "Edited"})
+    assert edit.status_code == 200
+    # A refused non-author call spends nothing.
+    assert (await _item("qa2", "DELETE", comment_run, cid)).status_code == 403
+    assert (await _item("qa", "PATCH", comment_run, cid, json={"body": "Again"})).status_code == 200
+    denied_edit = await _item("qa", "PATCH", comment_run, cid, json={"body": "Over"})
+    denied_delete = await _item("qa", "DELETE", comment_run, cid)
+    for denied in (denied_edit, denied_delete):
+        assert denied.status_code == 429 and denied.json()["code"] == "rate_limited"
+        assert denied.headers["Retry-After"] == "60"
+    assert (await _call("qa", "GET", comment_run)).json()["comments"][0]["body"] == "Again"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+@pytest.mark.parametrize("role", ["anonymous", "no_subject"])
+async def test_edit_and_delete_require_verified_actor(comment_run, role, method):
+    comment = await _create("qa", comment_run)
+    payload = {"json": {"body": "Denied"}} if method == "PATCH" else {}
+    response = await _item(role, method, comment_run, comment["comment_id"], **payload)
+    assert response.status_code == 401 and response.json()["code"] == "actor_required"
+    assert (await _call("qa", "GET", comment_run)).json() == {"comments": [comment]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+async def test_missing_comments_table_returns_notes_not_ready_on_item_routes(
+    comment_run, library, method
+):
+    with sqlite3.connect(library.db) as conn:
+        conn.execute("DROP TABLE run_comments")
+    payload = {"json": {"body": "Not ready"}} if method == "PATCH" else {}
+    response = await _item("qa", method, comment_run, "cmt_x", **payload)
+    assert response.status_code == 503 and response.json()["code"] == "notes_not_ready"

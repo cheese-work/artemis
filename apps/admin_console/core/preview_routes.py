@@ -70,6 +70,8 @@ REAL = frozenset(
         "GET /api/runs/{session_id}/annotations/{annotation_id}/evidence",
         "GET /api/runs/{session_id}/comments",
         "POST /api/runs/{session_id}/comments",
+        "PATCH /api/runs/{session_id}/comments/{comment_id}",
+        "DELETE /api/runs/{session_id}/comments/{comment_id}",
         "GET /api/system/retention",
         "GET /api/system/storage",
         "GET /api/system/whoami",

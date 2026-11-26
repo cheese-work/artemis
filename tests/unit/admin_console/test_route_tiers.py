@@ -88,6 +88,7 @@ def _assert_routes_have_declared_tiers(routes):
                     "/api/runs/{session_id}/annotations",
                     "/api/runs/{session_id}/annotations/{annotation_id}",
                     "/api/runs/{session_id}/comments",
+                    "/api/runs/{session_id}/comments/{comment_id}",
                 }
                 if path in public_note_controls:
                     from apps.admin_console.core.ownership import evidence_scope
@@ -132,6 +133,11 @@ def test_every_registered_route_has_a_declared_tier_and_guard():
 @pytest.mark.parametrize("method", ["GET", "POST"])
 def test_run_comment_routes_are_public_tier(method):
     assert route_tier("/api/runs/{session_id}/comments", {method}) == "public"
+
+
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+def test_run_comment_item_routes_are_public_tier(method):
+    assert route_tier("/api/runs/{session_id}/comments/{comment_id}", {method}) == "public"
 
 
 @pytest.mark.parametrize(

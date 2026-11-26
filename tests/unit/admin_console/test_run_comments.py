@@ -148,3 +148,58 @@ def test_note_write_budget_uses_configured_limit(note_limiter, monkeypatch):
     with pytest.raises(AdminAPIError) as caught:
         run_annotations.require_note_write(AUTHOR)
     assert caught.value.code == "rate_limited"
+
+
+def test_get_comment_returns_the_comment_or_none(thread):
+    conn, run = thread
+    comment = notes.add_comment(conn, run, "find me", AUTHOR)
+
+    assert notes.get_comment(conn, comment.comment_id) == comment
+    assert notes.get_comment(conn, "cmt_missing") is None
+
+
+def test_edit_comment_replaces_body_and_sets_edited_at(thread, monkeypatch):
+    conn, run = thread
+    comment = notes.add_comment(conn, run, "before", AUTHOR)
+    monkeypatch.setattr(notes, "time", SimpleNamespace(time=lambda: 500.0))
+
+    edited = notes.edit_comment(conn, comment.comment_id, "  <b>after</b>\n")
+
+    assert edited.body == "  <b>after</b>\n" and edited.edited_at == 500.0
+    assert edited.created_at == comment.created_at
+    assert notes.get_comment(conn, comment.comment_id) == edited
+    assert notes.list_comments(conn, run) == [edited]
+
+
+@pytest.mark.parametrize(
+    "body", ["", "x" * 4001, "before\x00after"], ids=["empty", "over-cap", "nul"]
+)
+def test_edit_comment_rejects_invalid_bodies_without_changing_it(thread, body):
+    conn, run = thread
+    comment = notes.add_comment(conn, run, "before", AUTHOR)
+    with pytest.raises(AdminAPIError) as caught:
+        notes.edit_comment(conn, comment.comment_id, body)
+
+    assert (caught.value.status_code, caught.value.code) == (422, "request_invalid")
+    assert notes.get_comment(conn, comment.comment_id) == comment
+
+
+def test_edit_comment_uses_configured_cap(thread, monkeypatch):
+    conn, run = thread
+    comment = notes.add_comment(conn, run, "before", AUTHOR)
+    monkeypatch.setattr(config, "COMMENT_BODY_MAX_CHARS", 4)
+
+    assert notes.edit_comment(conn, comment.comment_id, "1234").body == "1234"
+    with pytest.raises(AdminAPIError):
+        notes.edit_comment(conn, comment.comment_id, "12345")
+
+
+def test_delete_comment_removes_only_that_comment(thread):
+    conn, run = thread
+    gone = notes.add_comment(conn, run, "gone", AUTHOR)
+    kept = notes.add_comment(conn, run, "kept", AUTHOR)
+
+    notes.delete_comment(conn, gone.comment_id)
+
+    assert notes.list_comments(conn, run) == [kept]
+    assert notes.get_comment(conn, gone.comment_id) is None
