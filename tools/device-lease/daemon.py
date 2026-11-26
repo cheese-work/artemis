@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 
+import audit
 from broker import Broker, DeviceRegistry, Refused, process_identity
 from device_lease.transport import MAX_FRAME, rpc
 
@@ -289,6 +290,10 @@ def main(argv=None):
             owner.add_argument("--reference", required=True)
         if operation == "release-android":
             owner.add_argument("--claim-id", required=True)
+            owner.add_argument(
+                "--actor", required=True, help="unverified label of who runs this release"
+            )
+            owner.add_argument("--actor-run-id", help="unverified run of the actor, if any")
     wait = sub.add_parser("wait", help="one fallback poll, condition wakeup and final comment")
     for flag in ("principal", "agent-id", "issue-id", "ticket", "offer-property-id"):
         wait.add_argument(
@@ -458,8 +463,18 @@ def main(argv=None):
                     )
                 }
             elif op == "release-android":
-                ledger.release(args["claim_id"], owner=args["owner"], run_id=args["run_id"])
+                ledger.release(
+                    args["claim_id"],
+                    owner=args["owner"],
+                    run_id=args["run_id"],
+                    actor=args["actor"],
+                    actor_run_id=args["actor_run_id"],
+                )
                 result = {"released": True}
+                try:  # The receipt is already durable in SQLite; export is secondary.
+                    audit.flush(state / "leases.sqlite3")
+                except (OSError, RuntimeError, sqlite3.Error):
+                    result["audit_exported"] = False
             else:
                 result = ledger.snapshot()
             print(json.dumps(result))

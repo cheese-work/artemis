@@ -137,6 +137,8 @@ class LiveTests(unittest.TestCase):
                         "other",
                         "--run-id",
                         "r",
+                        "--actor",
+                        "cli:fixture",
                     ]
                 ),
                 2,
@@ -149,6 +151,8 @@ class LiveTests(unittest.TestCase):
             "android",
             "--run-id",
             "r",
+            "--actor",
+            "cli:fixture",
         )
         # A stale producer must not replace a newer readiness generation.
         payload = json.loads(observations.read_text())

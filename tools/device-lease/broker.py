@@ -1780,6 +1780,14 @@ class Broker:
         if transfer is not None:
             from device_lease.claims import transfer_claim
 
-            transfer_claim(conn, transfer, proof["claim_handoff"], lease_id, now)
+            transfer_claim(
+                conn,
+                transfer,
+                proof["claim_handoff"],
+                lease_id,
+                now,
+                actor=principal,
+                actor_run_id=run_id,
+            )
         response = self._view(conn, lease_id)
         return response

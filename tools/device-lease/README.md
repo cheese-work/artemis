@@ -967,8 +967,26 @@ that are not group/world writable. Run `device-lease OP --help` for exact flags.
 | `write-readiness` | `--input OBSERVATIONS.json` | Validate and atomically publish per-device grants and observations |
 | `census-android-claims` | `--input CENSUS.json [--validate-reload]` | Attest a complete writer census, or preview a replacement without publishing |
 | `claim-android` | `--device-id ALIAS --owner OWNER --run-id RUN --reference AUDIT_REF` | Return owned claim ID, or refuse occupancy |
-| `release-android` | `--claim-id ID --owner OWNER --run-id RUN` | Remove only that owned claim |
+| `release-android` | `--claim-id ID --owner OWNER --run-id RUN --actor LABEL [--actor-run-id RUN]` | Remove only that exactly-owned claim and record a `claim_release` receipt |
 | `list-android-claims` | none | Read source metadata and all authoritative claim rows, including stale state |
+
+Claim deletion receipts (CHE-10235): `release-android` and the owner-consented
+claim handoff are the only two paths that delete a claim. Each successful deletion
+writes one receipt in the same SQLite transaction, through the broker audit outbox
+(`broker_audit`, exported to `leases.sqlite3.audit.jsonl`). If the receipt cannot be
+queued, the transaction rolls back and the claim stays. A wrong-owner or wrong-run
+request deletes nothing and writes no receipt. Receipt fields: `event`
+(`claim_release` or `claim_transfer`), `time`, `claim_id`, `device_id`, `agent`/`run_id`
+(the claim owner and its run), `issue` (the claim reference), `actor`, `actor_run_id`,
+`actor_verified` (always `false`), `outcome` (`deleted` or `transferred`) and, for a
+handoff, `lease_id`. For a handoff the actor is the acquiring principal and run, which
+exact-owner validation already requires to equal the claim owner and run.
+
+Trust limit: `--actor` and `--actor-run-id` are labels the caller types. Every
+process of the daemon's Unix user can claim any label, so a receipt attributes a
+deletion to a label, never to an authenticated identity. Use a label that names the
+real operator or tool; do not reuse another run's identity. Receipts are not written
+retroactively; deletions made before this change have no actor on record.
 
 A census input contains `generation` (positive integer), `observed_at` (epoch),
 `complete: true`, `writers: ["android", "artemis"]`, and `claims` (the full list of
@@ -1043,6 +1061,26 @@ inherit the same guard/database settings. Direct SDK launchers must set both.
 A guarded writer must use the configured SDK lock directory and contain the SDK
 admission check. Disabled staging must retain both wrapper environment settings
 and the exact owner-approved wrapper digest; this command never enables staging.
+
+Enumeration diagnostic (CHE-10235): when a registered, unrestricted, physical rig
+serial is missing from the shared server's `host:devices-l` answer, refresh reads
+sysfs (`/sys/bus/usb/devices`) once. It reads only `serial` and each interface's
+class/subclass/protocol, and only for serials it is looking for. A serial whose
+interface is ff/42/01 (ADB) is reported in the result as
+`enumeration_diagnostics`, for example:
+
+```json
+{"enumeration_diagnostics": [{"serial": "271b67798f1c7ece", "reason": "usb_adb_interface_present_adb_absent", "observed_at": 1795000000.0}]}
+```
+
+`reason` is `usb_adb_interface_present_adb_absent`, or `host_usb_observation_unavailable`
+(sysfs unreadable) or `host_usb_observation_stale` (older than the readiness age) for
+every missing serial. The diagnostic never makes a serial ready: it stays absent from
+`devices`, claims are kept, and every existing gate applies. ADB states `offline` and
+`unauthorized` are not enumeration gaps and add no diagnostic. It does not say why the
+phone dropped out (for example, it does not claim ENOBUFS). Detection sends no ADB or
+device command and starts no ADB server, resets no USB device or service, and
+deletes no claim.
 
 Refresh takes the shared flock from observations through both owner commits. It
 checks live service environments, reads only `host:devices-l` from the existing

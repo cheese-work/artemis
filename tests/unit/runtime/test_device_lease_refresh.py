@@ -14,7 +14,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_device_lease_compose as fixtures
 import compose
 import daemon
-from broker import Broker
+import refresh as refresh_module
+from broker import Broker, Device
+
+
+def registry():
+    base = fixtures.registry()
+    return type(base)([*base.devices(), Device("locked-1")])  # rig pool, restricted
 
 
 class Wire:
@@ -45,11 +51,9 @@ class RefreshTests(unittest.TestCase):
         locks.mkdir(parents=True)
         self.config["artemis_locks_dir"] = str(locks)
         self.composed = compose.compose(
-            self.config_file(), fixtures.registry(), db_path=self.root / "leases.sqlite3"
+            self.config_file(), registry(), db_path=self.root / "leases.sqlite3"
         )
-        self.broker = Broker(
-            self.root / "leases.sqlite3", fixtures.registry(), **self.composed["broker"]
-        )
+        self.broker = Broker(self.root / "leases.sqlite3", registry(), **self.composed["broker"])
         self.broker.inventory()
         self.ledger = self.composed["ledger"]
         self.ledger.census(
@@ -85,10 +89,28 @@ class RefreshTests(unittest.TestCase):
             ),
             dict(device_id="rig-2", restricted=False, identity_confirmed=True),
             dict(device_id="spare-1", pool="spare"),
+            dict(device_id="locked-1"),  # restricted by default
         ]
+        self.usb = self.root / "sys-usb"
+        self.usb.mkdir()
+
+    def plug(self, serial, *, interface=("ff", "42", "01"), name=None):
+        """Synthetic sysfs USB device: only the files the observer may read."""
+        device = self.usb / (name or f"1-{len(list(self.usb.iterdir())) + 1}")
+        (device / f"{device.name}:1.0").mkdir(parents=True)
+        (device / "serial").write_text(serial + "\n")
+        for leaf, value in zip(("Class", "SubClass", "Protocol"), interface):
+            (device / f"{device.name}:1.0" / f"bInterface{leaf}").write_text(value + "\n")
+
+    def diagnostics(self):
+        return json.loads(self.stdout.getvalue())["enumeration_diagnostics"]
 
     def refresh(
-        self, payload=b"rig-1\tdevice product:fixture\nspare-1\tdevice\n", *, missing=False
+        self,
+        payload=b"rig-1\tdevice product:fixture\nspare-1\tdevice\n",
+        *,
+        missing=False,
+        observer=None,
     ):
         config = self.write_json("host.json", self.host)
         registry = self.write_json("registry.json", self.registry_rows)
@@ -108,7 +130,11 @@ class RefreshTests(unittest.TestCase):
                 return_value=Wire(payload),
                 side_effect=ConnectionRefusedError if missing else None,
             ) as connect,
-            contextlib.redirect_stdout(io.StringIO()),
+            patch.object(refresh_module, "USB_ROOT", self.usb),
+            patch.object(
+                refresh_module, "usb_adb_serials", observer or refresh_module.usb_adb_serials
+            ),
+            contextlib.redirect_stdout(io.StringIO()) as self.stdout,
             contextlib.redirect_stderr(io.StringIO()),
         ):
             try:
@@ -138,6 +164,119 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual([r["device_id"] for r in admitted["devices"]], ["rig-1"])
         self.assertEqual(self.ledger.snapshot()["claims"][0]["claim_id"], self.claim)
         self.assertTrue(self.broker.inventory()["admission_available"])
+
+    def admitted(self):
+        return [
+            r["device_id"] for r in json.loads((self.root / "admitted.json").read_text())["devices"]
+        ]
+
+    def test_healthy_enumeration_has_no_diagnostic(self):
+        self.prepare()
+        self.plug("rig-1")
+        self.assertEqual(self.refresh(), 0)
+        self.assertEqual(self.diagnostics(), [])
+        self.assertEqual(self.admitted(), ["rig-1"])
+
+    def test_usb_absent_and_adb_absent_is_an_ordinary_disconnect(self):
+        self.prepare()
+        self.assertEqual(self.refresh(b"spare-1\tdevice\n"), 0)
+        self.assertEqual(self.diagnostics(), [])
+        self.assertEqual(self.admitted(), [])
+
+    def test_usb_present_adb_absent_is_reported_and_stays_unavailable(self):
+        self.prepare()
+        self.plug("rig-1")
+        before = time.time()
+        with patch("subprocess.Popen") as spawn:
+            self.assertEqual(self.refresh(b"spare-1\tdevice\n"), 0)
+        spawn.assert_not_called()
+        (found,) = self.diagnostics()
+        self.assertEqual(found["serial"], "rig-1")
+        self.assertEqual(found["reason"], "usb_adb_interface_present_adb_absent")
+        self.assertGreaterEqual(found["observed_at"], before)
+        self.assertNotIn("ENOBUFS", json.dumps(found))
+        self.assertEqual(self.admitted(), [])
+        self.assertEqual(self.ledger.snapshot()["claims"][0]["claim_id"], self.claim)
+        self.assertTrue(self.broker.inventory()["admission_available"])
+
+    def test_offline_and_unauthorized_adb_are_not_enumeration_gaps(self):
+        self.prepare()
+        self.plug("rig-1")
+        self.plug("rig-2")
+        self.assertEqual(self.refresh(b"rig-1\toffline\nrig-2\tunauthorized\n"), 0)
+        self.assertEqual(self.diagnostics(), [])
+        self.assertEqual(self.admitted(), [])
+
+    def test_stale_or_failed_host_observation_is_explicit_never_ready(self):
+        self.prepare()
+        for observer, reason in (
+            (lambda *a: (time.time() - 3600, {"rig-1"}), "host_usb_observation_stale"),
+            (
+                lambda *a: (_ for _ in ()).throw(OSError("fixture sysfs failure")),
+                "host_usb_observation_unavailable",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                self.assertEqual(self.refresh(b"spare-1\tdevice\n", observer=observer), 0)
+                self.assertEqual({d["reason"] for d in self.diagnostics()}, {reason})
+                self.assertEqual({d["serial"] for d in self.diagnostics()}, {"rig-1", "rig-2"})
+                self.assertEqual(self.admitted(), [])
+
+    def test_restricted_spare_and_non_adb_usb_devices_are_excluded(self):
+        self.prepare()
+        self.plug("locked-1")
+        self.plug("spare-1")
+        self.plug("rig-1", interface=("08", "06", "50"))  # mass storage, not ADB
+        self.plug("unregistered-9")
+        self.assertEqual(self.refresh(b""), 0)
+        self.assertEqual(self.diagnostics(), [])
+
+    def test_observer_reads_only_serial_and_interface_identity(self):
+        self.prepare()
+        self.plug("rig-1")
+        (self.usb / "1-1" / "manufacturer").write_text("private\n")
+        observed_at, serials = refresh_module.usb_adb_serials(self.usb, {"rig-1", "rig-2"})
+        self.assertEqual(serials, {"rig-1"})
+        self.assertLess(abs(time.time() - observed_at), 5)
+
+    def test_release_cli_requires_and_records_an_actor(self):
+        self.prepare()
+        registry = self.write_json("registry.json", self.registry_rows)
+        base = [
+            "release-android",
+            "--composition",
+            str(self.config_file()),
+            "--registry",
+            str(registry),
+            "--state-dir",
+            str(self.root),
+            "--claim-id",
+            self.claim,
+            "--owner",
+            "other",
+            "--run-id",
+            "retained-run",
+        ]
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            daemon.main(base)  # --actor is required
+        self.assertEqual(self.ledger.snapshot()["claims"][0]["claim_id"], self.claim)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(
+                daemon.main(base + ["--actor", "operator:cheese", "--actor-run-id", "op-7"]), 0
+            )
+        self.assertEqual(json.loads(out.getvalue()), {"released": True})
+        self.assertEqual(self.ledger.snapshot()["claims"], [])
+        exported = [
+            json.loads(line)
+            for line in Path(str(self.root / "leases.sqlite3") + ".audit.jsonl")
+            .read_text()
+            .splitlines()
+        ]
+        receipt = [e for e in exported if e["event"] == "claim_release"]
+        self.assertEqual(
+            [(e["actor"], e["actor_run_id"], e["agent"]) for e in receipt],
+            [("operator:cheese", "op-7", "other")],
+        )
 
     def pool_config(self):
         self.prepare()
@@ -195,7 +334,7 @@ class RefreshTests(unittest.TestCase):
 
     def test_each_pool_lease_records_issue_run_serial_and_authority_independently(self):
         self.pool_config()
-        self.ledger.release(self.claim, owner="other", run_id="retained-run")
+        self.ledger.release(self.claim, owner="other", run_id="retained-run", actor="cli:fixture")
         self.assertEqual(self.refresh(b"rig-1\tdevice\nrig-2\tdevice\n"), 0)
         groups = [
             self.broker.acquire(

@@ -307,7 +307,7 @@ class StartupTests(unittest.TestCase):
             self.device.aliases[0], owner="foreign", run_id="other", reference="claim-authority"
         )
         self.refused("device_busy", self.start)
-        ledger.release(claim, owner="foreign", run_id="other")
+        ledger.release(claim, owner="foreign", run_id="other", actor="cli:fixture")
         (locks / "artemis-device-fixture.lock").write_text(
             json.dumps({"device_id": self.device.aliases[0]})
         )

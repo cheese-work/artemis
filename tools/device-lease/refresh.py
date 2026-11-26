@@ -106,6 +106,56 @@ def devices():
     return result
 
 
+USB_ROOT = Path("/sys/bus/usb/devices")
+
+
+def usb_adb_serials(root, serials):
+    """Host-only sysfs read: which registered serials show an ADB USB interface (ff/42/01).
+
+    Reads only `serial` and interface class/subclass/protocol. No ADB, no device I/O.
+    """
+    found = set()
+    for device in Path(root).iterdir():  # raises if sysfs is unreadable
+        try:
+            serial = (device / "serial").read_text().strip()
+            if serial not in serials:
+                continue
+            for interface in device.glob(f"{device.name}:*"):
+                triple = [
+                    (interface / f"bInterface{leaf}").read_text().strip()
+                    for leaf in ("Class", "SubClass", "Protocol")
+                ]
+                if triple == ["ff", "42", "01"]:
+                    found.add(serial)
+        except FileNotFoundError:
+            continue  # not a USB device with a serial, or unplugged mid-read
+    return time.time(), found
+
+
+def enumeration_diagnostics(registry, observed, max_age, now):
+    """Report unrestricted rig serials the kernel shows but shared ADB omits. Read-only."""
+    missing = {
+        d.device_id
+        for d in registry.devices()
+        if d.pool == "rig"
+        and d.kind == "physical"
+        and not d.restricted
+        and registry.eligible(d.device_id, "device")
+        and d.device_id not in observed
+    }
+    if not missing:
+        return []
+    try:
+        seen_at, usb = usb_adb_serials(USB_ROOT, missing)
+    except (OSError, ValueError):
+        seen_at, usb, reason = now, missing, "host_usb_observation_unavailable"
+    else:
+        stale = not -MAX_SKEW <= now - seen_at <= max_age
+        reason = "host_usb_observation_stale" if stale else "usb_adb_interface_present_adb_absent"
+        usb = missing if stale else usb
+    return [{"serial": s, "reason": reason, "observed_at": seen_at} for s in sorted(usb)]
+
+
 def avd_readiness(broker, observed, max_age, *, observed_at=None):
     """Owner readback only, never an ordinary candidate or a work transition."""
     from startup import _journal, phase_grant_matches, pinned_device, verified_identity
@@ -282,6 +332,9 @@ def refresh(composed, host_config, broker):
             return {
                 **result,
                 "ready_devices": len(payload["devices"]),
+                "enumeration_diagnostics": enumeration_diagnostics(
+                    registry, observed, composed["admitted_age"], now
+                ),
                 "avd_readiness": avd_readiness(
                     broker, observed, composed["admitted_age"], observed_at=now
                 ),
