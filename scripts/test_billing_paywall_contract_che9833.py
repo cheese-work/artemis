@@ -50,6 +50,18 @@ class BillingPaywallContractTest(unittest.TestCase):
         )
         self.assertEqual(manifest["revenuecat_test_store"]["offering_id"], "che801_test")
         self.assertEqual(manifest["revenuecat_test_store"]["entitlement_id"], "premium")
+        lookup_method = manifest["customer_lookup_method"]
+        self.assertIn("sort by **Last Seen** newest first", text)
+        for phrase in (
+            "unique customer",
+            "last-seen time",
+            "after that case's launch",
+            "60 seconds",
+            "NOT-RUN",
+            "BLOCKED",
+        ):
+            self.assertIn(phrase, lookup_method)
+            self.assertIn(phrase, text)
         self.assertFalse(manifest["authoring_boundary"]["device_or_adb_commands_run"])
         self.assertFalse(manifest["authoring_boundary"]["apk_built_or_installed"])
         self.assertFalse(manifest["authoring_boundary"]["artemis_execution"])
@@ -73,7 +85,23 @@ class BillingPaywallContractTest(unittest.TestCase):
             self.assertIn(case["assertion"], journey_cases[case_id])
             self.assertIn(case["logcat_oracle"], journey_cases[case_id])
             self.assertIn(case["build"], {"configured_test_store", "billing_not_configured"})
-        self.assertEqual(manifest["cases"]["C"]["identity_precondition"].count("App User ID"), 1)
+        case_c = manifest["cases"]["C"]
+        self.assertIn("perform Restore for either identity", case_c["identity_precondition"])
+        self.assertIn("RestoreEmpty message appears", case_c["assertion"])
+        self.assertIn("paywall remains open", case_c["assertion"])
+        self.assertIn("B's recorded customer remains unchanged", case_c["assertion"])
+        self.assertIn(case_c["identity_mismatch_expected"], journey_cases["C"])
+        self.assertEqual(case_c["completion_timeout_seconds"], 120)
+        self.assertIn("within 120 seconds", journey_cases["C"])
+        self.assertIn("NOT-RUN and BLOCKED", journey_cases["C"])
+        self.assertIn(
+            "Always attempt Restore",
+            manifest["fixture_reset"]["case_C_restore_outcomes"],
+        )
+        self.assertIn(
+            "RestoreEmpty",
+            manifest["fixture_reset"]["case_C_restore_outcomes"],
+        )
         self.assertEqual(
             manifest["cases"]["E"]["customer_entitlement"],
             "NOT_APPLICABLE: billing not initialized",

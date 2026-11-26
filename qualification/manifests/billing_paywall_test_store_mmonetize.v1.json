@@ -43,6 +43,7 @@
     "api_key": "never_record",
     "package_list": "recorded_from_dashboard_before_run"
   },
+  "customer_lookup_method": "During A-D no other device uses the configured key. After billing initialization, sort the RevenueCat dashboard customer list by Last Seen newest first and identify the unique customer with a last-seen time after that case's launch. Record its exact App User ID and last-seen time in access-controlled evidence. After pm clear and relaunch, allow up to 60 seconds for one unique newest customer; ambiguity is NOT-RUN and BLOCKED.",
   "cases": {
     "A": {
       "name": "offering_and_prices",
@@ -65,11 +66,12 @@
     "C": {
       "name": "restore_after_app_data_clear",
       "build": "configured_test_store",
-      "assertion": "Restore displays Active, the Premium active toast is captured in the continuous screen recording, BillingPaywallDemoActivity closes, and premium is active for the same App User ID as B.",
+      "assertion": "If the App User ID matches B: the Premium active toast is captured in the continuous screen recording, BillingPaywallDemoActivity closes, and premium remains active for that ID. If the ID differs from B: the RestoreEmpty message appears, the paywall remains open, and premium is inactive for the new ID while B's recorded customer remains unchanged.",
       "logcat_oracle": "`initBilling: billing/core initialized`",
       "logcat_expected": "present",
-      "identity_precondition": "The exact RevenueCat App User ID read from the dashboard before Restore must match B; if it differs or is ambiguous, mark NOT-RUN and BLOCKED.",
-      "customer_entitlement": "RevenueCat dashboard for the same App User ID as B",
+      "identity_precondition": "Identify the current ID using customer_lookup_method and compare with B; perform Restore for either identity. If no unique current ID is found, mark NOT-RUN and BLOCKED.",
+      "identity_mismatch_expected": "RestoreEmpty message; paywall remains open; premium inactive for the new ID; B's recorded customer entitlement remains unchanged.",
+      "customer_entitlement": "Before and after Restore, read the current App User ID; if it differs from B, also read B's recorded customer and verify that its entitlement is unchanged.",
       "completion_timeout_seconds": 120
     },
     "D": {
@@ -95,7 +97,7 @@
   "fixture_reset": {
     "before_each_case": "adb -s <device_serial> shell pm clear io.mmonetize.sample",
     "pm_clear_is_install": false,
-    "case_C_restores_purchase_created_by": "B only when the exact dashboard App User ID matches before and after pm clear; otherwise NOT-RUN",
+    "case_C_restore_outcomes": "Always attempt Restore when the post-clear App User ID is uniquely identified. Matching B ID expects Premium active toast, activity closure, and active premium. Different ID expects RestoreEmpty message, open paywall, inactive premium on the new ID, and unchanged entitlement on B's recorded customer.",
     "case_E_requires_build_without_revenuecat_key": true,
     "shared_device_state_reset": false
   },
