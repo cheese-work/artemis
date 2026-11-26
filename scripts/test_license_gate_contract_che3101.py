@@ -70,6 +70,16 @@ class LicenseGateContractTest(unittest.TestCase):
                 self.assertIn("--data-urlencode", text)
                 self.assertIn("database", text)
                 self.assertIn("docker compose", text)
+                if sdk == "mmonetize":
+                    self.assertIn(
+                        "poll the launch-PID log until both the `message_regex_by_case` match "
+                        "and the case's `init=` match appear",
+                        text,
+                    )
+                    self.assertIn(
+                        "the same 12-second wait requires both matches before logcat is dumped",
+                        text,
+                    )
                 self.assertTrue(all(value in text for value in SCENARIOS.values()))
                 self.assertEqual(data["initialization"]["coverage"], "ASSERTED_PER_CASE")
                 init_log = data["observation"]["initialization_log"]
