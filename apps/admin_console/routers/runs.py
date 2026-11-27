@@ -38,6 +38,7 @@ from apps.admin_console.core.ownership import (
     scope_for,
 )
 from apps.admin_console.core.redaction import redact_image_data, redact_text
+from artemis.data_engine import run_catalog
 
 try:
     from admin_console.database.repositories.run_catalog_repository import (
@@ -164,8 +165,13 @@ async def list_runs(
         return _error(400, "invalid_cursor")
     except CatalogNotReady:
         return _error(503, "catalog_not_ready")
+    runs = [_present(run, scope, team=team) for run in page.runs]
+    if q and q.strip():
+        # Built from the presented page: visible runs only, prompt already redacted.
+        for run in runs:
+            run["snippet"] = run_catalog.search_snippet(run, q)
     return {
-        "runs": [_present(run, scope, team=team) for run in page.runs],
+        "runs": runs,
         "next_cursor": page.next_cursor,
         "warnings": page.warnings,
         "total": page.total,
