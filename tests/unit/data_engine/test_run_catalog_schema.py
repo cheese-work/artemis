@@ -213,7 +213,7 @@ def test_snapshot_index_upgrade_rebuilds_old_rows_only_once(old_catalog, rc):
         before = conn.execute(
             "SELECT revision, updated_at FROM schema_revisions WHERE module = 'run_catalog_fts'"
         ).fetchone()
-        assert before is not None and before[0] == 1
+        assert before is not None and before[0] == len(rc.FTS_REVISIONS)
         version = conn.execute("PRAGMA data_version").fetchone()
         assert rc.migrate(old_catalog).backup_path is None
         assert conn.execute("PRAGMA data_version").fetchone() == version

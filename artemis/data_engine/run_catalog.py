@@ -50,6 +50,11 @@ _TRIGGERS_FTS = (
     "run_catalog_meta_ad",
 )
 _TRIGGERS_PLAIN = ("run_catalog_sessions_ai", "run_catalog_sessions_ad")
+NOTES_MODULE = "run_catalog_notes"
+_NOTES_TABLES = ("run_comments", "run_annotations")
+_TRIGGERS_NOTES = tuple(
+    f"run_catalog_{table}_{event}" for table in _NOTES_TABLES for event in ("ai", "au", "ad")
+)
 
 _TABLES_DDL = (
     """
@@ -104,7 +109,7 @@ META_TEXT = " || ' ' || ".join(
 FTS_MODULE = "run_catalog_fts"
 FTS_RANK_COLUMNS = (
     "(highlight(runs_fts, 0, char(1), char(2)) = runs_fts.prompt) AS goal_miss, "
-    "bm25(runs_fts, 10.0, 1.0) AS score, -m.rid AS sort_rid"
+    "bm25(runs_fts, 10.0, 1.0, 1.0) AS score, -m.rid AS sort_rid"
 )
 FTS_RANK_ORDER = "goal_miss, score, sort_rid"
 
@@ -117,19 +122,43 @@ def _device_ref_sql(column: str) -> str:
     )
 
 
-def _refresh(session_id: str, meta_text: str) -> str:
+def _notes_text() -> str:
+    """Comment and annotation bodies of the run ``m`` (a ``run_meta`` row in scope)."""
+    return (
+        "coalesce((SELECT group_concat(body, char(10)) FROM ("
+        "SELECT body FROM run_comments WHERE session_id = m.session_id "
+        "UNION ALL SELECT body FROM run_annotations WHERE session_id = m.session_id)), '')"
+    )
+
+
+def _index_row(meta_text: str, *, notes_col: bool, notes_text: bool) -> tuple[str, str]:
+    """Column list and select list of one ``runs_fts`` row (notes text only when installed)."""
+    if not notes_col:
+        return "rowid, prompt, meta", f"m.rid, coalesce(s.initial_goal, ''), {meta_text}"
+    notes = _notes_text() if notes_text else "''"
+    return (
+        "rowid, prompt, meta, notes",
+        f"m.rid, coalesce(s.initial_goal, ''), {meta_text}, {notes}",
+    )
+
+
+def _refresh(
+    session_id: str, meta_text: str, *, notes_col: bool = False, notes_text: bool = False
+) -> str:
     """Re-index one session; tombstoned or deleted runs end up out of the index."""
+    columns, select = _index_row(meta_text, notes_col=notes_col, notes_text=notes_text)
     return (
         f"DELETE FROM runs_fts WHERE rowid IN "
         f"(SELECT rid FROM run_meta WHERE session_id = {session_id}); "
-        f"INSERT INTO runs_fts (rowid, prompt, meta) "
-        f"SELECT m.rid, coalesce(s.initial_goal, ''), {meta_text} "
+        f"INSERT INTO runs_fts ({columns}) SELECT {select} "
         f"FROM run_meta m JOIN sessions s ON s.session_id = m.session_id "
         f"WHERE m.session_id = {session_id} AND m.deleted_at IS NULL;"
     )
 
 
-def _trigger_ddl(fts: bool, *, snapshots: bool = False) -> list[str]:
+def _trigger_ddl(
+    fts: bool, *, snapshots: bool = False, notes_col: bool = False, notes_text: bool = False
+) -> list[str]:
     # Not INSERT OR IGNORE: an outer INSERT OR REPLACE on sessions overrides the
     # conflict clause of statements inside a trigger and would replace run_meta.
     create_meta = (
@@ -142,8 +171,11 @@ def _trigger_ddl(fts: bool, *, snapshots: bool = False) -> list[str]:
         f"deleted_reason = coalesce(deleted_reason, 'session_deleted') "
         f"WHERE session_id = old.session_id;"
     )
+    meta_text = META_TEXT if snapshots else _LEGACY_META_TEXT
     refresh = (
-        _refresh("new.session_id", META_TEXT if snapshots else _LEGACY_META_TEXT) if fts else ""
+        _refresh("new.session_id", meta_text, notes_col=notes_col, notes_text=notes_text)
+        if fts
+        else ""
     )
     ddl = [
         "CREATE TRIGGER IF NOT EXISTS run_catalog_sessions_ai AFTER INSERT ON sessions BEGIN "
@@ -175,24 +207,58 @@ def _trigger_ddl(fts: bool, *, snapshots: bool = False) -> list[str]:
             "CREATE TRIGGER IF NOT EXISTS run_catalog_meta_ad AFTER DELETE ON run_meta BEGIN "
             "DELETE FROM runs_fts WHERE rowid = old.rid; END",
         ]
+    if fts and notes_text:
+        # A run's note text is part of its index row, so any change to a note re-indexes the run.
+        for table in _NOTES_TABLES:
+            ddl += [
+                f"CREATE TRIGGER IF NOT EXISTS run_catalog_{table}_ai AFTER INSERT ON {table} "
+                f"BEGIN {refresh} END",
+                f"CREATE TRIGGER IF NOT EXISTS run_catalog_{table}_au "
+                f"AFTER UPDATE OF body, session_id ON {table} BEGIN {refresh} END",
+                f"CREATE TRIGGER IF NOT EXISTS run_catalog_{table}_ad AFTER DELETE ON {table} "
+                f"BEGIN {_refresh('old.session_id', meta_text, notes_col=True, notes_text=True)} END",
+            ]
     return ddl
 
 
-def _rebuild_ddl(meta_text: str) -> tuple[str, str]:
+def _rebuild_ddl(
+    meta_text: str, *, notes_col: bool = False, notes_text: bool = False
+) -> tuple[str, str]:
+    columns, select = _index_row(meta_text, notes_col=notes_col, notes_text=notes_text)
     return (
         "DELETE FROM runs_fts",
-        f"INSERT INTO runs_fts (rowid, prompt, meta) "
-        f"SELECT m.rid, coalesce(s.initial_goal, ''), {meta_text} "
+        f"INSERT INTO runs_fts ({columns}) SELECT {select} "
         f"FROM run_meta m JOIN sessions s ON s.session_id = m.session_id "
         f"WHERE m.deleted_at IS NULL",
     )
 
 
+_DROP_FTS_TRIGGERS = tuple(f"DROP TRIGGER IF EXISTS {name}" for name in _TRIGGERS_FTS)
+_DROP_NOTES_TRIGGERS = tuple(f"DROP TRIGGER IF EXISTS {name}" for name in _TRIGGERS_NOTES)
+
 FTS_REVISIONS = (
     (
-        *(f"DROP TRIGGER IF EXISTS {name}" for name in _TRIGGERS_FTS),
+        *_DROP_FTS_TRIGGERS,
         *_trigger_ddl(fts=True, snapshots=True),
         *_rebuild_ddl(META_TEXT),
+    ),
+    # FTS5 has no ADD COLUMN: recreate the index with a ``notes`` column (filled by NOTES_REVISIONS).
+    (
+        *_DROP_FTS_TRIGGERS,
+        "DROP TABLE runs_fts",
+        "CREATE VIRTUAL TABLE runs_fts USING fts5(prompt, meta, notes)",
+        *_trigger_ddl(fts=True, snapshots=True, notes_col=True),
+        *_rebuild_ddl(META_TEXT, notes_col=True),
+    ),
+)
+
+# Applied by ``migrate_notes`` once both the index column and the notes tables exist.
+NOTES_REVISIONS = (
+    (
+        *_DROP_FTS_TRIGGERS,
+        *_DROP_NOTES_TRIGGERS,
+        *_trigger_ddl(fts=True, snapshots=True, notes_col=True, notes_text=True),
+        *_rebuild_ddl(META_TEXT, notes_col=True, notes_text=True),
     ),
 )
 
@@ -232,14 +298,44 @@ def _snapshot_index_installed(conn: sqlite3.Connection) -> bool:
     )
 
 
+def _fts_columns(conn: sqlite3.Connection) -> set[str]:
+    return {row[1] for row in conn.execute("PRAGMA table_info(runs_fts)")}
+
+
+def _notes_index_installed(conn: sqlite3.Connection) -> bool:
+    return (
+        search_mode(conn) == "fts"
+        and "notes" in _fts_columns(conn)
+        and all(_has(conn, "table", table) for table in _NOTES_TABLES)
+        and _has(conn, "table", "schema_revisions")
+        and conn.execute(
+            "SELECT 1 FROM schema_revisions WHERE module = ? AND revision >= 1", (NOTES_MODULE,)
+        ).fetchone()
+        is not None
+    )
+
+
 def _complete(conn: sqlite3.Connection, fts: bool) -> bool:
     wanted = _TRIGGERS_FTS if fts else _TRIGGERS_PLAIN
+    if fts and _notes_index_installed(conn):
+        wanted += _TRIGGERS_NOTES
+    if not fts and any(_has(conn, "trigger", name) for name in _TRIGGERS_NOTES):
+        return False  # note triggers need runs_fts
     return (
         _has(conn, "table", "run_meta")
         and _has(conn, "table", "run_link_shares")
         and _has(conn, "index", "idx_sessions_start_order")
         and all(_has(conn, "trigger", name) for name in wanted)
     )
+
+
+def _index_flags(conn: sqlite3.Connection, *, snapshots: bool) -> dict[str, bool]:
+    notes_col = search_mode(conn) == "fts" and "notes" in _fts_columns(conn)
+    return {
+        "snapshots": snapshots,
+        "notes_col": notes_col,
+        "notes_text": notes_col and _notes_index_installed(conn),
+    }
 
 
 def ensure_schema(conn: sqlite3.Connection) -> bool:
@@ -266,12 +362,12 @@ def ensure_schema(conn: sqlite3.Connection) -> bool:
             conn.execute(statement)
         promoting = fts and not _has(conn, "table", "runs_fts")
         if promoting:
-            conn.execute("CREATE VIRTUAL TABLE runs_fts USING fts5(prompt, meta)")
+            conn.execute("CREATE VIRTUAL TABLE runs_fts USING fts5(prompt, meta, notes)")
         # Replace, never keep: triggers from a substring-mode install lack the index upkeep.
-        for name in dict.fromkeys(_TRIGGERS_FTS + _TRIGGERS_PLAIN):
+        for name in dict.fromkeys(_TRIGGERS_FTS + _TRIGGERS_PLAIN + _TRIGGERS_NOTES):
             conn.execute(f"DROP TRIGGER IF EXISTS {name}")
         snapshots = fts and _snapshot_index_installed(conn) and _has_snapshot_columns(conn)
-        for statement in _trigger_ddl(fts, snapshots=snapshots):
+        for statement in _trigger_ddl(fts, **_index_flags(conn, snapshots=snapshots)):
             conn.execute(statement)
         if promoting:
             rebuild(conn)  # index the runs created while search was substring-only
@@ -299,7 +395,12 @@ def rebuild(conn: sqlite3.Connection) -> int:
     if search_mode(conn) != "fts":
         return 0
     snapshots = _snapshot_index_installed(conn) and _has_snapshot_columns(conn)
-    delete, insert = _rebuild_ddl(META_TEXT if snapshots else _LEGACY_META_TEXT)
+    flags = _index_flags(conn, snapshots=snapshots)
+    delete, insert = _rebuild_ddl(
+        META_TEXT if snapshots else _LEGACY_META_TEXT,
+        notes_col=flags["notes_col"],
+        notes_text=flags["notes_text"],
+    )
     conn.execute(delete)
     cursor = conn.execute(insert)
     conn.commit()
@@ -364,6 +465,24 @@ def _migrate_search(conn: sqlite3.Connection, db_path: str | Path) -> Path | Non
     return None
 
 
+def migrate_notes(db_path: str | Path) -> schema_revisions.RevisionReport:
+    """Index comment and annotation text, once the index column and both notes tables exist.
+
+    Called after the notes tables are created. Idempotent; a database without FTS5 (or
+    without the snapshot index) is left on the substring fallback, which does not search notes.
+    """
+    with closing(sqlite3.connect(db_path, timeout=30.0)) as conn:
+        ready = (
+            search_mode(conn) == "fts"
+            and "notes" in _fts_columns(conn)
+            and _has_snapshot_columns(conn)
+            and all(_has(conn, "table", table) for table in _NOTES_TABLES)
+        )
+    if not ready:
+        return schema_revisions.RevisionReport((), None)
+    return schema_revisions.apply(db_path, NOTES_MODULE, NOTES_REVISIONS)
+
+
 # -- search -------------------------------------------------------------------
 
 _TERM = re.compile(r"[^\W_]+")
@@ -414,7 +533,7 @@ def search_snippet(run: dict[str, Any], text: str) -> dict[str, str] | None:
     never from the index, so it cannot expose a hidden run or unredacted goal text.
     Fields are tried in search priority order; the first one holding any term wins.
     """
-    terms = [t.casefold() for t in _TERM.findall(text)][:_MAX_TERMS]
+    terms = _fold_terms(text)
     device = run.get("device_ref")
     fields = (
         ("prompt", run.get("prompt")),
@@ -429,19 +548,35 @@ def search_snippet(run: dict[str, Any], text: str) -> dict[str, str] | None:
         ("host_id", run.get("host_id")),
     )
     for name, value in fields:
-        if not isinstance(value, str):
-            continue
-        hits = [i for t in terms if (i := value.casefold().find(t)) >= 0]
-        if hits:
-            start = max(0, min(hits) - _SNIPPET_RADIUS)
-            end = min(len(value), min(hits) + _SNIPPET_RADIUS)
-            return {
-                "field": name,
-                "text": ("…" if start else "")
-                + value[start:end]
-                + ("…" if end < len(value) else ""),
-            }
+        if isinstance(value, str) and (window := _window(value, terms)) is not None:
+            return {"field": name, "text": window}
     return None
+
+
+def note_snippet(notes: list[tuple[str, str]], text: str) -> dict[str, str] | None:
+    """First ``(field, body)`` note holding a search term, as a snippet.
+
+    ``notes`` are the already-visible run's comments and annotations, newest first,
+    already redacted when the viewer is read-only; the field is ``comment`` or ``annotation``.
+    """
+    terms = _fold_terms(text)
+    for name, body in notes:
+        if (window := _window(body, terms)) is not None:
+            return {"field": name, "text": window}
+    return None
+
+
+def _fold_terms(text: str) -> list[str]:
+    return [t.casefold() for t in _TERM.findall(text)][:_MAX_TERMS]
+
+
+def _window(value: str, terms: list[str]) -> str | None:
+    hits = [i for t in terms if (i := value.casefold().find(t)) >= 0]
+    if not hits:
+        return None
+    start = max(0, min(hits) - _SNIPPET_RADIUS)
+    end = min(len(value), min(hits) + _SNIPPET_RADIUS)
+    return ("…" if start else "") + value[start:end] + ("…" if end < len(value) else "")
 
 
 def search_session_ids(conn: sqlite3.Connection, text: str) -> list[str]:

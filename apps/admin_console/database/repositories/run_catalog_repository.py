@@ -314,6 +314,38 @@ class RunCatalogRepository:
         )
         return RunPage(runs, next_cursor, warnings, total)
 
+    def note_texts(self, session_ids: list[str]) -> dict[str, list[tuple[str, str]]]:
+        """``(field, body)`` comments and annotations per run, newest first.
+
+        Only for runs the caller already passed through the visibility join; the
+        search index is never the source of a snippet.
+        """
+        found: dict[str, list[tuple[str, str]]] = {}
+        if not session_ids:
+            return found
+        marks = ", ".join("?" for _ in session_ids)
+        with db_session(self.db_path) as conn:
+            tables = [
+                (field, table)
+                for field, table in (("comment", "run_comments"), ("annotation", "run_annotations"))
+                if conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+                ).fetchone()
+            ]
+            if not tables:
+                return found
+            union = " UNION ALL ".join(
+                f"SELECT '{field}' AS field, session_id, body, created_at FROM {table} "
+                f"WHERE session_id IN ({marks})"
+                for field, table in tables
+            )
+            rows = conn.execute(
+                f"{union} ORDER BY created_at DESC", session_ids * len(tables)
+            ).fetchall()
+        for row in rows:
+            found.setdefault(row["session_id"], []).append((row["field"], row["body"]))
+        return found
+
     def get_run(self, session_id: str, *, prefix_owners: list[str] | None = None) -> RunLookup:
         """Resolve a full id or owner-filtered prefix, including the tombstone decision."""
         session_id = run_catalog.validate_session_id(session_id, base_dir=self.traces_dir)
