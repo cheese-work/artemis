@@ -1,22 +1,57 @@
 """Linux launch adapter with synthetic files/processes and a fake smart socket."""
 
+import contextlib
 from dataclasses import replace
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import select
 import socket
+import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import Mock, patch
+
+from tests.support.case_deadline import (
+    CaseReached,
+    case_deadline,
+    deadline_supported,
+    owned_workers,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_device_lease_broker  # noqa: F401 -- installs broker source path
 from registry import DeviceRegistry
 import startup
 import compose
+
+
+# Budgets from the CHE-9311 calibration (lease phases, 15x load).
+B_HS = 6  # seconds: worker handshake select, widened from the product's 3
+B_EXIT = 10  # seconds: Popen.wait after the except path, widened from the product's 5
+C_MAIN = 30  # seconds: whole main case
+C_FP01 = 6  # seconds: FP-01 case, ends early when the fake reports "drained"
+
+LINUX_DEADLINE = unittest.skipUnless(
+    sys.platform.startswith("linux") and deadline_supported(),
+    "needs Linux process groups, SIGALRM and the main thread",
+)
+
+PARTIAL_JOURNAL_WORKER = """\
+import fcntl, os, struct, sys, termios, time
+os.write(1, b'{"worker": ')
+# The parent has read the partial line once the pipe holds no unread bytes.
+while struct.unpack("i", fcntl.ioctl(1, termios.FIONREAD, b"\\0\\0\\0\\0"))[0]:
+    time.sleep(0.01)
+open(DRAINED, "w").write("drained")
+sys.stdin.read()
+"""
+SILENT_WORKER = "#!/bin/sh\nexec 3>&1\nexec cat >/dev/null\n"
+EOF_WORKER = "import os\nos.close(1)\n"
 
 
 class StartupIOTests(unittest.TestCase):
@@ -63,6 +98,47 @@ class StartupIOTests(unittest.TestCase):
 
     def adapter(self):
         return startup.LinuxStartupIO(lambda: self.host)
+
+    @contextlib.contextmanager
+    def widened(self, *, handshake=True):
+        """Give the product's fixed 3 s handshake and 5 s reap budgets room under load."""
+        real_select, real_wait = select.select, subprocess.Popen.wait
+
+        def wide_select(readers, writers, errors, timeout=None):
+            if handshake and timeout is not None:
+                timeout = max(timeout, B_HS)
+            return real_select(readers, writers, errors, timeout)
+
+        def wide_wait(proc, timeout=None):
+            return real_wait(proc, None if timeout is None else max(timeout, B_EXIT))
+
+        with (
+            patch("startup.select.select", wide_select),
+            patch.object(subprocess.Popen, "wait", wide_wait),
+        ):
+            yield
+
+    def fake_worker(self, source, *, interpreter=None):
+        """Make ``prepare`` spawn ``source`` as the worker; returns the path it writes on drain."""
+        drained = Path(self.temp.name) / "drained"
+        script = Path(self.temp.name) / "fake_worker"
+        script.write_text(source.replace("DRAINED", repr(str(drained))))
+        patches = [patch.object(startup, "__file__", str(script))]
+        if interpreter:
+            patches.append(
+                patch.object(startup, "sys", types.SimpleNamespace(executable=interpreter))
+            )
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        return drained
+
+    def assert_partial_read(self, outcome, drained, workers, marker):
+        self.assertIsInstance(outcome, CaseReached, outcome)
+        self.assertTrue(drained.exists(), "worker never saw the partial line consumed")
+        self.assertEqual(len(workers), 1)
+        self.assertEqual(workers[0].returncode, 0)  # reaped by the except path
+        self.assertFalse(marker.exists())
 
     def test_preflight_requires_shared_listener_pins_and_no_existing_resource_user(self):
         adapter = self.adapter()
@@ -311,16 +387,57 @@ class StartupIOTests(unittest.TestCase):
         )
         self.binary.chmod(0o700)
         adapter = self.adapter()
-        journal = adapter.prepare(self.device)
+        with owned_workers(), self.widened(), case_deadline(C_MAIN):
+            journal = adapter.prepare(self.device)
+            self.assertFalse(marker.exists())
+            self.assertNotEqual(journal["worker"]["pid"], journal["child"]["pid"])
+            adapter.abort(journal)
+            self.assertFalse(marker.exists())
+            journal = adapter.prepare(self.device)
+            self.assertFalse(marker.exists())
+            adapter.resume(journal)
+            adapter._running[journal["worker"]["pid"]].wait(timeout=B_EXIT)
+            self.assertEqual(marker.read_text(), "fake only")
+
+    @LINUX_DEADLINE
+    def test_silent_worker_times_out_the_handshake_and_is_reaped(self):
+        marker = Path(self.temp.name) / "executed"
+        self.fake_worker(SILENT_WORKER, interpreter="/bin/sh")
+        adapter = self.adapter()
+        with owned_workers() as workers, self.widened(handshake=False):
+            with case_deadline(3 + B_EXIT):
+                with self.assertRaisesRegex(ValueError, "paused worker handshake timeout"):
+                    adapter.prepare(self.device)
+        self.assertEqual(len(workers), 1)
+        self.assertIsNotNone(workers[0].returncode)
         self.assertFalse(marker.exists())
-        self.assertNotEqual(journal["worker"]["pid"], journal["child"]["pid"])
-        adapter.abort(journal)
-        self.assertFalse(marker.exists())
-        journal = adapter.prepare(self.device)
-        self.assertFalse(marker.exists())
-        adapter.resume(journal)
-        adapter._running[journal["worker"]["pid"]].wait(timeout=5)
-        self.assertEqual(marker.read_text(), "fake only")
+
+    @LINUX_DEADLINE
+    def test_partial_journal_is_bounded_and_reaped(self):
+        # REQUIRED_TEST id=FP-01 severity=P1 class=failure-path
+        marker = Path(self.temp.name) / "executed"
+        drained = self.fake_worker(PARTIAL_JOURNAL_WORKER)
+        adapter = self.adapter()
+        with owned_workers() as workers, self.widened():
+            with case_deadline(C_FP01, until=drained.exists):
+                try:
+                    adapter.prepare(self.device)
+                    outcome = None
+                except BaseException as exc:  # CaseReached must be seen as the outcome
+                    outcome = exc
+        self.assert_partial_read(outcome, drained, workers, marker)
+
+    @LINUX_DEADLINE
+    def test_eof_before_a_journal_is_not_a_partial_read(self):
+        marker = Path(self.temp.name) / "executed"
+        drained = self.fake_worker(EOF_WORKER)
+        adapter = self.adapter()
+        with owned_workers() as workers, self.widened():
+            with case_deadline(B_EXIT):
+                with self.assertRaises(json.JSONDecodeError) as caught:
+                    adapter.prepare(self.device)
+        with self.assertRaises(AssertionError):
+            self.assert_partial_read(caught.exception, drained, workers, marker)
 
     def test_worker_allows_bounded_slow_journal_recheck_before_forwarding_gate(self):
         with (
