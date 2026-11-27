@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -326,5 +327,67 @@ func TestGCVersions(t *testing.T) {
 		if fileExists(filepath.Join(dir, "versions", version)) != want {
 			t.Fatalf("%s present=%v want %v", version, !want, want)
 		}
+	}
+}
+
+func TestFailClosedOnBadReadiness(t *testing.T) {
+	for name, body := range map[string]string{
+		"malformed json": `{`,
+		"other contract": `{"contract":2,"attempt_id":"att-1","version":"1.1.0"}`,
+	} {
+		dir := launcherFixture(t)
+		if err := beginSwitch(dir, "1.1.0", "att-1", launcherNow); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "ready.json"), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		before, _ := os.ReadFile(filepath.Join(dir, "update-pending.json"))
+		// Past the deadline: without the guard this would roll back.
+		if _, err := resolveLaunch(dir, launcherNow.Add(time.Hour)); errorCode(err) != "SQH-E304" {
+			t.Fatalf("%s: %v", name, err)
+		}
+		after, _ := os.ReadFile(filepath.Join(dir, "update-pending.json"))
+		if string(before) != string(after) || fileExists(filepath.Join(dir, "update-result.json")) {
+			t.Fatalf("%s: state changed", name)
+		}
+	}
+}
+
+func TestUnknownFieldsSurviveRewrites(t *testing.T) {
+	write := func(dir, name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	extra := func(t *testing.T, dir, name string) string {
+		var fields map[string]any
+		readTestJSON(t, dir, name, &fields)
+		s, _ := fields["future"].(string)
+		return s
+	}
+	// beginSwitch rewrites the pointer; resolveLaunch rewrites the marker (starts++).
+	dir := launcherFixture(t)
+	write(dir, "current.json", `{"contract":1,"version":"1.0.0","previous":"","future":"pointer"}`)
+	if err := beginSwitch(dir, "1.1.0", "att-1", launcherNow); err != nil {
+		t.Fatal(err)
+	}
+	if extra(t, dir, "current.json") != "pointer" {
+		t.Fatal("pointer lost its unknown field in beginSwitch")
+	}
+	write(dir, "update-pending.json", `{"contract":1,"from":"1.0.0","to":"1.1.0","attempt_id":"att-1","deadline_unix":`+
+		strconv.FormatInt(launcherNow.Unix()+60, 10)+`,"starts":0,"future":"marker"}`)
+	if _, err := resolveLaunch(dir, launcherNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if extra(t, dir, "update-pending.json") != "marker" {
+		t.Fatal("marker lost its unknown field")
+	}
+	// Rollback rewrites the pointer.
+	if _, err := resolveLaunch(dir, launcherNow.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if extra(t, dir, "current.json") != "pointer" {
+		t.Fatal("pointer lost its unknown field in rollback")
 	}
 }

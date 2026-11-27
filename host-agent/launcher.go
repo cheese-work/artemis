@@ -32,6 +32,8 @@ type launcherPointer struct {
 	Contract int    `json:"contract"`
 	Version  string `json:"version"`
 	Previous string `json:"previous"`
+
+	Extra map[string]json.RawMessage `json:"-"` // unknown fields from a compatible writer
 }
 
 type launcherMarker struct {
@@ -41,6 +43,73 @@ type launcherMarker struct {
 	AttemptID    string `json:"attempt_id"`
 	DeadlineUnix int64  `json:"deadline_unix"`
 	Starts       int    `json:"starts"`
+
+	Extra map[string]json.RawMessage `json:"-"` // unknown fields from a compatible writer
+}
+
+// Pointer and marker are rewritten in place, so unknown fields (state files are
+// additive within contract 1) are carried through instead of dropped.
+func (p launcherPointer) MarshalJSON() ([]byte, error) {
+	type plain launcherPointer
+	return marshalWithExtra(plain(p), p.Extra)
+}
+
+func (p *launcherPointer) UnmarshalJSON(data []byte) error {
+	type plain launcherPointer
+	return unmarshalWithExtra(data, (*plain)(p), &p.Extra)
+}
+
+func (m launcherMarker) MarshalJSON() ([]byte, error) {
+	type plain launcherMarker
+	return marshalWithExtra(plain(m), m.Extra)
+}
+
+func (m *launcherMarker) UnmarshalJSON(data []byte) error {
+	type plain launcherMarker
+	return unmarshalWithExtra(data, (*plain)(m), &m.Extra)
+}
+
+func marshalWithExtra(known any, extra map[string]json.RawMessage) ([]byte, error) {
+	data, err := json.Marshal(known)
+	if err != nil || len(extra) == 0 {
+		return data, err
+	}
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	for key, value := range extra {
+		if _, taken := fields[key]; !taken {
+			fields[key] = value
+		}
+	}
+	return json.Marshal(fields)
+}
+
+func unmarshalWithExtra(data []byte, known any, extra *map[string]json.RawMessage) error {
+	if err := json.Unmarshal(data, known); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(known)
+	if err != nil {
+		return err
+	}
+	var knownFields map[string]json.RawMessage
+	if err = json.Unmarshal(encoded, &knownFields); err != nil {
+		return err
+	}
+	for key := range knownFields {
+		delete(fields, key)
+	}
+	*extra = nil
+	if len(fields) > 0 {
+		*extra = fields
+	}
+	return nil
 }
 
 // launcherReady is written by the agent (stage 4b) once it is locally ready.
@@ -195,7 +264,8 @@ func beginSwitch(stateDir, to, attemptID string, now time.Time) error {
 	if err = writeLauncherJSON(stateDir, launcherMarkerRef, marker); err != nil {
 		return err
 	}
-	return writeLauncherJSON(stateDir, launcherPointerRef, launcherPointer{Contract: launcherContract, Version: to, Previous: pointer.Version})
+	pointer.Version, pointer.Previous = to, pointer.Version
+	return writeLauncherJSON(stateDir, launcherPointerRef, pointer)
 }
 
 // resolveLaunch decides what to start and applies confirm, rollback and
@@ -225,7 +295,11 @@ func resolveLaunch(stateDir string, now time.Time) (launcherPlan, error) {
 	}
 	result := launcherResult{Contract: launcherContract, From: marker.From, To: marker.To, AttemptID: marker.AttemptID, AtUnix: now.Unix()}
 	var ready launcherReady
-	if found, _ := readLauncherJSON(stateDir, launcherReadyRef, &ready); found && ready.AttemptID == marker.AttemptID && ready.Version == marker.To {
+	found, err := readLauncherJSON(stateDir, launcherReadyRef, &ready)
+	if err != nil {
+		return launcherPlan{}, err
+	}
+	if found && ready.AttemptID == marker.AttemptID && ready.Version == marker.To {
 		result.Outcome = "confirmed"
 		if err = writeLauncherJSON(stateDir, launcherResultRef, result); err == nil {
 			err = removeMarker(stateDir)
@@ -245,7 +319,8 @@ func resolveLaunch(stateDir string, now time.Time) (launcherPlan, error) {
 	}
 	result.Outcome = "rolled_back"
 	if err = writeLauncherJSON(stateDir, launcherResultRef, result); err == nil {
-		err = writeLauncherJSON(stateDir, launcherPointerRef, launcherPointer{Contract: launcherContract, Version: marker.From})
+		pointer.Version, pointer.Previous = marker.From, ""
+		err = writeLauncherJSON(stateDir, launcherPointerRef, pointer)
 	}
 	if err == nil {
 		err = removeMarker(stateDir)
