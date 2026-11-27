@@ -27,8 +27,16 @@ from __future__ import annotations
 import os
 
 ENV_HOST_AGENT = "ARTEMIS_HOST_AGENT"
+ENV_HOST_RECORDING = "ARTEMIS_HOST_RECORDING"
 _TRUTHY = frozenset({"enabled", "1", "true", "yes", "on"})
 
 
 def host_agent_enabled() -> bool:
     return os.environ.get(ENV_HOST_AGENT, "").strip().lower() in _TRUTHY
+
+
+def host_recording_enabled() -> bool:
+    """Host recording (CHE-1098) needs its own flag: no host recorder exists before stage 8."""
+    return (
+        host_agent_enabled() and os.environ.get(ENV_HOST_RECORDING, "").strip().lower() in _TRUTHY
+    )
