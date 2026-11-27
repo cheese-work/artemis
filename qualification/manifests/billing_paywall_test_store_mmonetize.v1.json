@@ -1,0 +1,129 @@
+{
+  "manifest_version": 1,
+  "issue": "CHE-9833",
+  "parent_issue": "CHE-801",
+  "candidate_kind": "testcase",
+  "status": "provisional",
+  "journey": "qualification/journeys/billing_paywall_test_store_mmonetize.md",
+  "runner": {
+    "repository": "https://github.com/cheese-work/artemis",
+    "base": "main"
+  },
+  "app": {
+    "repository": "https://github.com/tevo-studio/mMonetize-sample",
+    "commit_sha": "c8cdf33bae61bb76577f0dacb14604011fe7e83d",
+    "sdk_repository": "https://github.com/tevo-studio/mMonetize",
+    "sdk_ref": "release/0.0.28",
+    "sdk_commit_sha": "cc2a1cb9b94e7db675cb6826df7b867895a19d4d",
+    "package_name": "io.mmonetize.sample",
+    "entry": "Paywall — Real offering",
+    "activity": "BillingPaywallDemoActivity",
+    "builds": {
+      "configured_test_store": {
+        "variant": "adsTestDebug",
+        "cases": ["A", "B", "C", "D"],
+        "revenuecat_key": "configured_in_ignored_local_properties",
+        "sample_source_commit_sha": "c8cdf33bae61bb76577f0dacb14604011fe7e83d",
+        "apk_sha256": "recorded_at_execution"
+      },
+      "billing_not_configured": {
+        "variant": "adsTestDebug",
+        "cases": ["E"],
+        "revenuecat_key": "absent",
+        "sample_source_commit_sha": "c8cdf33bae61bb76577f0dacb14604011fe7e83d",
+        "apk_sha256": "recorded_at_execution"
+      }
+    }
+  },
+  "revenuecat_test_store": {
+    "product_id": "che801_premium_monthly_test",
+    "monthly_package_id": "recorded_from_dashboard_before_run",
+    "entitlement_id": "premium",
+    "offering_id": "che801_test",
+    "api_key": "never_record",
+    "package_list": "recorded_from_dashboard_before_run"
+  },
+  "customer_lookup_method": "During A-D no other device uses the configured key. Enable the RevenueCat dashboard sandbox-data view and record the dashboard environment and filter. After billing initialization, sort the customer list by Last Seen newest first and identify the unique customer with a last-seen time after that case's launch. Record its exact App User ID and last-seen time in access-controlled evidence. After pm clear and relaunch, allow up to 60 seconds for one unique newest customer; ambiguity is NOT-RUN and BLOCKED.",
+  "cases": {
+    "A": {
+      "name": "offering_and_prices",
+      "build": "configured_test_store",
+      "assertion": "The plan list shows every recorded che801_test package and its localized Test Store price.",
+      "logcat_oracle": "`initBilling: billing/core initialized`",
+      "logcat_expected": "present",
+      "customer_entitlement": "dashboard state for the identified case customer",
+      "readiness_timeout_seconds": 60
+    },
+    "B": {
+      "name": "purchase_monthly",
+      "build": "configured_test_store",
+      "assertion": "The Premium active toast appears in the continuous screen recording, BillingPaywallDemoActivity closes, and premium is active for the identified RevenueCat customer.",
+      "logcat_oracle": "`initBilling: billing/core initialized`",
+      "logcat_expected": "present",
+      "customer_entitlement": "RevenueCat dashboard for the App User ID associated with this purchase",
+      "completion_timeout_seconds": 120
+    },
+    "C": {
+      "name": "restore_after_app_data_clear",
+      "build": "configured_test_store",
+      "assertion": "If the App User ID matches B: the Premium active toast is captured in the continuous screen recording, BillingPaywallDemoActivity closes, and premium remains active for that ID. If the ID differs from B: the required Active restore result is NOT-RUN because the anonymous App User ID changed after pm clear; case C is BLOCKED, never PASS.",
+      "logcat_oracle": "`initBilling: billing/core initialized`",
+      "logcat_expected": "present",
+      "identity_precondition": "Identify the current ID using customer_lookup_method and compare with B; perform Restore for either identity. If no unique current ID is found, mark NOT-RUN and BLOCKED.",
+      "identity_mismatch_expected": "If the ID differs from B: the required Active restore result is NOT-RUN because the anonymous App User ID changed after pm clear; case C is BLOCKED, never PASS.",
+      "customer_entitlement": "Read the current App User ID and B's recorded ID before and after Restore, including whether premium transferred; record the dashboard Restore Behavior setting. On an ID mismatch this evidence is supplementary and cannot make case C pass.",
+      "supplementary_restore_ui": ["Premium active", "No purchases to restore", "Restore failed. Please try again."],
+      "restore_failure_disposition": "BLOCKED: infra",
+      "completion_timeout_seconds": 120
+    },
+    "D": {
+      "name": "cancel_purchase",
+      "build": "configured_test_store",
+      "assertion": "The dialog dismisses, no purchase error appears during the following 30 seconds, the paywall remains open, and premium is inactive for this case's identified customer.",
+      "logcat_oracle": "`initBilling: billing/core initialized`",
+      "logcat_expected": "present",
+      "customer_entitlement": "RevenueCat dashboard for this case's identified App User ID; ambiguous identity is NOT-RUN and BLOCKED",
+      "cancel_observation_seconds": 30,
+      "readiness_timeout_seconds": 60
+    },
+    "E": {
+      "name": "billing_not_configured",
+      "build": "billing_not_configured",
+      "assertion": "The Billing is not configured message appears and billing initialization is skipped.",
+      "logcat_oracle": "`initBilling: billing/core initialized`",
+      "logcat_expected": "absent during the captured startup log window",
+      "customer_entitlement": "NOT_APPLICABLE: billing not initialized",
+      "readiness_timeout_seconds": 60
+    }
+  },
+  "fixture_reset": {
+    "before_each_case": "adb -s <device_serial> shell pm clear io.mmonetize.sample",
+    "pm_clear_is_install": false,
+    "case_C_restore_outcomes": "Always attempt Restore when the post-clear App User ID is uniquely identified. Matching B ID can pass only with Premium active toast, activity closure, and active premium. Different ID makes the required Active restore result NOT-RUN and case C BLOCKED, never PASS; record the actual UI, entitlement for both IDs before and after Restore, and dashboard Restore Behavior as supplementary evidence. The visible No purchases to restore Snackbar is supplementary only. Restore failed. Please try again. is BLOCKED: infra.",
+    "case_E_requires_build_without_revenuecat_key": true,
+    "shared_device_state_reset": false
+  },
+  "evidence_per_case": [
+    "privacy_safe_screenshot_or_continuous_screen_recording",
+    "specified_logcat_evidence_or_case_E_absence_capture",
+    "revenuecat_dashboard_customer_entitlement_or_explicit_not_applicable",
+    "testcase_revision",
+    "sample_source_commit_sha",
+    "apk_sha256",
+    "device_serial",
+    "command_exit_status",
+    "timeout_or_completion_disposition"
+  ],
+  "review_contract": {
+    "independent_non_author_reviewers_required": 2,
+    "same_revision_required": true,
+    "must_precede_execution": true
+  },
+  "authoring_boundary": {
+    "device_or_adb_commands_run": false,
+    "apk_built_or_installed": false,
+    "artemis_execution": false,
+    "accepted_execution_evidence": false
+  },
+  "execution_status": "NOT-RUN"
+}

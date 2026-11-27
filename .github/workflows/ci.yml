@@ -77,6 +77,10 @@ jobs:
       - name: Install locked development environment
         run: uv sync --dev --locked
 
+      - name: Run CHE-9833 testcase contract test
+        if: matrix.suite == 'deterministic'
+        run: python scripts/test_billing_paywall_contract_che9833.py
+
       - name: Check disposable build caches and free retention policy
         run: |
           uv run python .github/tests/test_build_cache.py
