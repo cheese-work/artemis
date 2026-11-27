@@ -165,13 +165,67 @@ def acquire(
     if scope not in (None, "tcp:127.0.0.1:5037"):
         raise Refused("device_not_yours")
     if (
-        broker.startup_io is None
-        or broker.managed_runs is None
+        broker.managed_runs is None
         or not hasattr(broker.admission_guard, "path")
         or Path(guard).resolve() != broker.admission_guard.path.resolve()
         or Path(database).resolve() != broker.db_path.resolve()
     ):
         raise Refused("admission_unavailable")
+
+    def physical_inputs(conn, now, group):
+        """A claim transferred to a physical lease: the claim consent, not a startup proof."""
+        binding, (device,) = group["binding"], group["devices"]
+        live = broker._admission.grants.get(device_id)
+        row = conn.execute(
+            "SELECT consent FROM android_claim_handoffs WHERE lease_id=?", (lease_id,)
+        ).fetchone()
+        if (
+            phase != "work"
+            or row is None
+            or binding["mode"] != "managed"
+            or (binding["issue_id"], binding["binding_id"]) != (issue_id, binding_id)
+            or json.loads(row[0])["census_generation"] != generation
+            or (device["device_id"], owner["device_id"]) != (device_id, device["endpoint"])
+        ):
+            raise Refused("access_phase_denied")
+        if (
+            broker.draining
+            or broker._admission.unavailable
+            or not broker._admission.audit_ok
+            or live is None
+            or not now < live["expires_at"]
+            or [(g["issue_id"], g["reference"]) for g in group["grants"]]
+            != [(issue_id, live["reference"])]
+        ):
+            raise Refused("admission_unavailable")
+        source, aliases = _source(conn, guard, clock=lambda: now)
+        directory, endpoint = Path(source[6]), device["endpoint"]
+        if directory != Path(lock_dir).resolve() or aliases.get(endpoint) != device_id:
+            raise Refused("admission_unavailable")
+        lock_id = f"tcp_127_0_0_1_5037__{endpoint}" if scope else endpoint
+        path = directory / f"artemis-device-{lock_id}.lock"
+        stored = _persisted(conn, lease_id)
+        if stored is not None:
+            if (
+                stored[0] != path
+                or stored[3]["reference"] != live["reference"]
+                or (stored[1]["pid"], stored[1]["token"]) != (peer_pid, owner["token"])
+            ):
+                raise Refused("execution_lock_busy")
+            return group, None, path, live, None
+        try:
+            if (
+                device_id in broker._admission.blocked
+                or os.path.lexists(path)
+                or conn.execute(
+                    "SELECT 1 FROM android_claims WHERE device_id=?", (device_id,)
+                ).fetchone()
+            ):
+                raise ValueError("device busy")
+            check_lock_conflicts(device_id, aliases, directory, own_path=path)
+        except ValueError as exc:
+            raise Refused("execution_lock_busy") from exc
+        return group, None, path, live, "physical"
 
     def inputs(conn, now):
         broker._require_authority(conn)
@@ -179,9 +233,12 @@ def acquire(
         if group["state"] != "active":
             raise Refused("lease_not_active")
         proof, binding = group["startup"], group["binding"]
+        if proof is None:
+            return physical_inputs(conn, now, group)
+        if broker.startup_io is None:
+            raise Refused("admission_unavailable")
         if (
-            proof is None
-            or group["access_phase"] not in {"starting", "work"}
+            group["access_phase"] not in {"starting", "work"}
             or binding["mode"] != "managed"
             or (
                 binding["issue_id"],
@@ -239,10 +296,11 @@ def acquire(
             peer = broker.managed_runs.execution_peer(group["binding"], peer_pid)
             if identity_input is None:
                 return {"acquired": True}
-            _, journal_text, _ = identity_input
-            journal = _journal(json.loads(journal_text))
-            identity = broker.startup_io.observe(device, journal)
-            verified_identity(device, journal, identity)
+            if identity_input != "physical":
+                _, journal_text, _ = identity_input
+                journal = _journal(json.loads(journal_text))
+                identity = broker.startup_io.observe(device, journal)
+                verified_identity(device, journal, identity)
             if broker.managed_runs.execution_peer(group["binding"], peer_pid) != peer:
                 raise Refused("run_not_live")
             with broker.transaction() as (conn, now):
@@ -255,11 +313,14 @@ def acquire(
                     "INSERT INTO broker_avd_work VALUES (?,?,?,?,?)",
                     (lease_id, json.dumps(grant), str(path), json.dumps(owner), json.dumps(peer)),
                 )
-                conn.execute("UPDATE broker_access SET phase='work' WHERE lease_id=?", (lease_id,))
-                conn.execute(
-                    "UPDATE broker_launches SET identity=? WHERE lease_id=?",
-                    (json.dumps(dict(identity, observed_at=now)), lease_id),
-                )
+                if identity_input != "physical":  # a physical lease is already in the work phase
+                    conn.execute(
+                        "UPDATE broker_access SET phase='work' WHERE lease_id=?", (lease_id,)
+                    )
+                    conn.execute(
+                        "UPDATE broker_launches SET identity=? WHERE lease_id=?",
+                        (json.dumps(dict(identity, observed_at=now)), lease_id),
+                    )
                 broker._event(
                     conn, "work_admitted", now, group, phase=phase, grant_ref=grant["reference"]
                 )
