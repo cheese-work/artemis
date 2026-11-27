@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
@@ -103,6 +104,31 @@ class DeviceReservations:
                     )
             self._claims[session_id] = (database, group_id, binding, snapshot)
             return snapshot
+
+    @contextmanager
+    def serialized(self, repo: DeviceRepository, *device_ids: str):
+        """Hold the admission lock; refuse with device_claimed while any of these devices has a claim."""
+        database = str(repo.db_path)
+        with self._lock:
+            canonical = {repo.resolve(device_id) for device_id in device_ids}
+            for claimed_database, _, _, claimed in self._claims.values():
+                if claimed_database != database:
+                    continue
+                match = (
+                    repo.connection(connection_id=claimed.connection_id)
+                    if claimed.connection_id
+                    else None
+                )
+                if (match and match.device_id in canonical) or claimed.key in {
+                    f"device:{device_id}" for device_id in canonical
+                }:
+                    raise AdminAPIError(
+                        409,
+                        "The phone is reserved for a run.",
+                        "device_claimed",
+                        "Wait for the run to finish or cancel the run.",
+                    )
+            yield
 
     def release(self, session_id: str | None) -> None:
         with self._lock:

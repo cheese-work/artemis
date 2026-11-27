@@ -5,10 +5,12 @@ connection key belongs to exactly one device; moving it is Merge or Split.
 """
 
 from dataclasses import dataclass
+import json
 import sqlite3
 import time
 import uuid
 
+from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.database.connection import db_session
 
 
@@ -311,6 +313,8 @@ class DeviceRepository:
                 (hardware_hash, now, device_id),
             )
             return device_id, "confirmed"
+        if self._kept_separate(conn, device_id, holder["device_id"]):
+            return device_id, "confirmed"  # the owner decided: this pair is never offered again
         if (
             current["match_state"] != "confirmed"
             and holder["owner_principal_id"] == current["owner_principal_id"]
@@ -371,7 +375,159 @@ class DeviceRepository:
             "INSERT INTO device_aliases (alias_device_id, device_id, created_at) VALUES (?, ?, ?)",
             (device_id, target, now),
         )
+        # A Keep separate decision about ``device_id`` now holds for ``target``; a pair that
+        # joins itself has nothing left to decide.
+        pairs = conn.execute(
+            "SELECT device_id_a, device_id_b FROM device_non_matches "
+            "WHERE device_id_a = ? OR device_id_b = ?",
+            (device_id, device_id),
+        ).fetchall()
+        conn.execute(
+            "DELETE FROM device_non_matches WHERE device_id_a = ? OR device_id_b = ?",
+            (device_id, device_id),
+        )
+        for first, second in pairs:
+            moved = sorted(target if d == device_id else d for d in (first, second))
+            if moved[0] != moved[1]:
+                conn.execute(
+                    "INSERT OR IGNORE INTO device_non_matches "
+                    "(device_id_a, device_id_b, created_at) VALUES (?, ?, ?)",
+                    (*moved, now),
+                )
         conn.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
+
+    def merge(
+        self, device_id: str, other_device_id: str, *, actor_principal_id: str, now: float
+    ) -> Device:
+        """``other_device_id`` joins the survivor ``device_id``, which ends ``confirmed``.
+
+        Callers serialize against queue admission first (``device_merge.merge``).
+        Raises ValueError for an unknown or identical pair, or two different hardware
+        identities (two phones); AdminAPIError for owners (docs/device-identity.md).
+        """
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
+            conn.execute("BEGIN IMMEDIATE")
+            with conn:
+                survivor, other = self._owned_pair(
+                    conn, device_id, other_device_id, actor_principal_id
+                )
+                if survivor["hardware_hash"] and other["hardware_hash"]:
+                    raise ValueError("devices with two hardware identities are two phones")
+                self._join(conn, other["device_id"], survivor["device_id"], now)
+                conn.execute(  # the hash is freed by the join, so the survivor can take it
+                    "UPDATE devices SET match_state = 'confirmed', updated_at = ?, "
+                    "hardware_hash = coalesce(hardware_hash, ?) WHERE device_id = ?",
+                    (now, other["hardware_hash"], survivor["device_id"]),
+                )
+                self._event(
+                    conn,
+                    "merged",
+                    survivor["device_id"],
+                    other["device_id"],
+                    survivor["device_id"],
+                    actor_principal_id,
+                    now,
+                )
+        return self.get(survivor["device_id"])
+
+    def keep_separate(
+        self, device_id: str, other_device_id: str, *, actor_principal_id: str, now: float
+    ) -> None:
+        """Record the pair as two phones: both end ``confirmed`` and matching never offers it again."""
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
+            conn.execute("BEGIN IMMEDIATE")
+            with conn:
+                first, second = self._owned_pair(
+                    conn, device_id, other_device_id, actor_principal_id
+                )
+                low, high = sorted((first["device_id"], second["device_id"]))
+                conn.execute(
+                    "INSERT OR IGNORE INTO device_non_matches (device_id_a, device_id_b, created_at) "
+                    "VALUES (?, ?, ?)",
+                    (low, high, now),
+                )
+                conn.execute(
+                    "UPDATE devices SET match_state = 'confirmed', updated_at = ? "
+                    "WHERE device_id IN (?, ?)",
+                    (now, low, high),
+                )
+                self._event(
+                    conn,
+                    "kept_separate",
+                    first["device_id"],
+                    second["device_id"],
+                    None,
+                    actor_principal_id,
+                    now,
+                )
+
+    def _owned_pair(
+        self, conn: sqlite3.Connection, device_id: str, other_device_id: str, actor: str
+    ):
+        """Both records, resolved through aliases, once the actor may decide for them."""
+        rows = []
+        for requested in (device_id, other_device_id):
+            canonical = self._resolve(conn, requested)
+            row = (
+                canonical
+                and conn.execute(
+                    f"SELECT {_COLUMNS} FROM devices WHERE device_id = ?", (canonical,)
+                ).fetchone()
+            )
+            if not row:
+                raise ValueError(f"unknown device {requested!r}")
+            rows.append(row)
+        if rows[0]["device_id"] == rows[1]["device_id"]:
+            raise ValueError("a device cannot be merged or kept separate from itself")
+        owners = {row["owner_principal_id"] for row in rows}
+        if owners != {actor}:
+            if len(owners) == 2 and actor in owners:
+                raise AdminAPIError(
+                    409,
+                    "The two records have different owners.",
+                    "device_identity_unresolved",
+                    "Ask an administrator to reassign ownership first.",
+                )
+            raise AdminAPIError(
+                403,
+                "This phone belongs to someone else.",
+                "device_not_yours",
+                "Only the phone's owner can decide.",
+            )
+        return rows
+
+    @staticmethod
+    def _event(conn, kind, device_id, other_device_id, survivor, actor, now) -> None:
+        payload = {
+            "device_id": device_id,
+            "other_device_id": other_device_id,
+            "survivor": survivor,
+            "actor_principal_id": actor,
+        }
+        conn.execute(
+            "INSERT INTO device_events (device_id, event_key, kind, payload, ts) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                device_id,
+                f"{device_id}:{kind}:{other_device_id}:{now!r}",
+                kind,
+                json.dumps(payload),
+                now,
+            ),
+        )
+
+    @staticmethod
+    def _kept_separate(conn: sqlite3.Connection, device_id: str, other_device_id: str) -> bool:
+        low, high = sorted((device_id, other_device_id))
+        return (
+            conn.execute(
+                "SELECT 1 FROM device_non_matches WHERE device_id_a = ? AND device_id_b = ?",
+                (low, high),
+            ).fetchone()
+            is not None
+        )
 
     def device_for_connection(self, source: str, host_id: str | None, serial: str) -> str | None:
         with db_session(self.db_path) as conn:
