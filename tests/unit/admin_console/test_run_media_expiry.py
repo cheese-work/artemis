@@ -22,9 +22,10 @@ import pytest
 from apps.admin_console.core.access_control import AccessIdentity, public_tier
 from apps.admin_console.database.repositories import annotation_repository as notes
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
+from apps.admin_console.routers import media as media_router
 from apps.admin_console.routers.run_annotations import initialize_notes
 from apps.admin_console.server import app
-from apps.admin_console.services import run_leases, run_retention
+from apps.admin_console.services import run_leases, run_media, run_retention
 from tests.unit.admin_console.conftest import make_client
 
 
@@ -314,6 +315,52 @@ async def test_a_failed_file_removal_is_retried_by_the_next_sweep(library, admin
         await _sweep(admin)
         assert not files["video"].exists() and files["log"].exists()
         assert (await _sweep(admin))["media_expired"] == []
+
+
+@pytest.fixture
+def media_roots(library, monkeypatch):
+    monkeypatch.setattr(media_router, "_allowed_media_roots", lambda: [library.traces.resolve()])
+    monkeypatch.setattr(media_router, "IMAGES_DIR", library.images)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["video", "image"])
+@pytest.mark.parametrize("timing", ["initial_cleanup", "deferred_retry"])
+async def test_a_media_request_that_loses_the_race_with_expiry_gets_404(
+    library, admin, media_roots, monkeypatch, kind, timing
+):
+    """The path resolves, then expiry removes the file before the lease is admitted."""
+    sid, _, files = _run(library)
+    path = files["video" if kind == "video" else "shot"]
+    url = f"/videos/{path.parent.name}/{path.name}" if kind == "video" else f"/images/{path.stem}"
+    real_lease = run_media.lease
+    if timing == "deferred_retry":
+        real_attempt, held = run_retention.attempt, []
+
+        def lease_first(action, key, *args, **kwargs):  # a download wins the cleanup
+            if action is run_retention._remove_media and not held:
+                held.append(run_leases.acquire(library.db, key))
+            return real_attempt(action, key, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(run_retention, "attempt", lease_first)
+            assert run_retention._expire_media(sid) == "deferred" and path.exists()
+        run_leases.release(library.db, held[0])
+
+    def expiry_wins(owners):
+        if timing == "initial_cleanup":
+            assert run_retention._expire_media(sid) == "done"
+        else:
+            assert run_retention._finish_media_expiries() == 1
+        assert not path.exists()
+        return real_lease(owners)
+
+    monkeypatch.setattr(run_media, "lease", expiry_wins)
+    async with admin:
+        response = await admin.get(url)
+    assert response.status_code == 404
+    assert run_leases.is_leased(sqlite3.connect(library.db), sid) is False  # lease released
+    assert _count(library, "SELECT COUNT(*) FROM run_meta WHERE session_id = ?", sid) == 1
 
 
 def test_old_binary_deletion_leaves_no_expiry_row_after_the_next_migration(library):
