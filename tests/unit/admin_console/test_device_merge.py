@@ -251,3 +251,40 @@ def test_keep_separate_is_idempotent(repo, people, db):
     with sqlite3.connect(db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM device_non_matches").fetchone() == (1,)
     assert len(_events(db, "kept_separate")) == 2
+
+
+def test_a_kept_separate_pair_survives_a_merge_of_either_side(repo, people, db):
+    alice = people["alice"]
+    held, _ = _phone(repo, alice, "held", state="confirmed", hardware_hash="hw")
+    other, _ = _phone(repo, alice, "other", state="uncertain")
+    device_merge.keep_separate(repo, other, held, actor_principal_id=alice, now=1.0)
+    # `other` is merged away into `survivor`; the decision about `other` follows it
+    survivor, _ = _phone(repo, alice, "survivor", state="confirmed")
+    device_merge.merge(repo, survivor, other, actor_principal_id=alice, now=2.0)
+
+    match = repo.match_connection(
+        kind="usb",
+        source="host",
+        host_id=HOST,
+        serial="survivor",
+        hardware_hash="hw",
+        readable=True,
+    )
+
+    assert repo.resolve(other) == survivor
+    assert match.outcome == "confirmed" and match.device_id == survivor
+    assert repo.resolve(held) == held  # still its own phone: the pair was not offered again
+
+
+def test_merging_the_two_sides_of_a_kept_pair_drops_the_decision(repo, people, db):
+    alice = people["alice"]
+    a, _ = _phone(repo, alice, "a")
+    b, _ = _phone(repo, alice, "b")
+    device_merge.keep_separate(repo, a, b, actor_principal_id=alice, now=1.0)
+
+    device_merge.merge(
+        repo, a, b, actor_principal_id=alice, now=2.0
+    )  # the owner changed their mind
+
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM device_non_matches").fetchone() == (0,)

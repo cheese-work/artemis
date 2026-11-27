@@ -375,6 +375,25 @@ class DeviceRepository:
             "INSERT INTO device_aliases (alias_device_id, device_id, created_at) VALUES (?, ?, ?)",
             (device_id, target, now),
         )
+        # A Keep separate decision about ``device_id`` now holds for ``target``; a pair that
+        # joins itself has nothing left to decide.
+        pairs = conn.execute(
+            "SELECT device_id_a, device_id_b FROM device_non_matches "
+            "WHERE device_id_a = ? OR device_id_b = ?",
+            (device_id, device_id),
+        ).fetchall()
+        conn.execute(
+            "DELETE FROM device_non_matches WHERE device_id_a = ? OR device_id_b = ?",
+            (device_id, device_id),
+        )
+        for first, second in pairs:
+            moved = sorted(target if d == device_id else d for d in (first, second))
+            if moved[0] != moved[1]:
+                conn.execute(
+                    "INSERT OR IGNORE INTO device_non_matches "
+                    "(device_id_a, device_id_b, created_at) VALUES (?, ?, ?)",
+                    (*moved, now),
+                )
         conn.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
 
     def merge(
