@@ -24,11 +24,14 @@ installation.
 ## Shared execution contract
 
 Use Artemis Pro because the cases require checkpoints, branching, diagnostics,
-and a report. Use a dedicated, admitted Android target with API 27 or newer and
-ABI `arm64-v8a` or `armeabi-v7a`; record exact model/image, API, ABI, serial,
-host, Artemis run ID, task/session ID, app SHA, APK SHA-256, and ICT start/end
-times. Sol supplies the target and grant after testcase reviews and admission.
-Do not auto-select a device. Do not begin before Sol records the exact grant.
+and a report. The target is a physical X99 phone, not an AVD. The proposed
+serial `52005dc458d6550f` is not claimed, and its ABI is unconfirmed (the
+registry value is null). Sol supplies the exact target and grant after testcase
+reviews and admission. Before execution, confirm API 27 or newer and ABI
+`arm64-v8a` or `armeabi-v7a`; record the exact model, API, ABI, serial, host,
+Artemis run ID, task/session ID, app SHA, APK SHA-256, and ICT start/end times.
+No claim or lease is held. Do not auto-select a device. Do not begin before Sol
+records the exact grant.
 
 Before each case, install the pinned APK only after admission, preserve existing
 apps and personal data, and use only the case's stated app configuration. Reset
@@ -86,29 +89,35 @@ Record fetch completion, view binding, and the first frame that visibly
 contains the real ad. The timer oracle starts at that first displayed frame,
 not at the loading skeleton or fetch success.
 
-**Steps:** Use separate reset attempts for the early and late taps. In the
-early attempt, tap once at 2.900 seconds after the first displayed frame.
+**Steps:** Use separate reset attempts for the early and late taps. Measure
+both from the first actual displayed-ad frame. Target the early tap at 2.900 s
+with a +/- 0.050 s tolerance. Record its actual time, measurement uncertainty,
+and resulting interval. The full interval must be strictly before 3.000 s.
 Observe the screen immediately, then confirm that the ad remains displayed
-without another tap at 3.100 seconds after that frame. Reset the case. In the
-late attempt, tap the visible close control once at 3.100 seconds or later
-after the first displayed frame.
+without another tap at 3.100 seconds after that frame. Reset the case. Target
+the late tap at 3.100 s with a +/- 0.050 s tolerance. Record its actual time,
+measurement uncertainty, and resulting interval. The full interval must be
+strictly after 3.000 s.
 
-**Assertions:** At 2.900 seconds, the early tap neither closes the ad nor
-opens the advertiser or underlying AP006 screen. In the early attempt, the ad
-remains displayed at 3.100 seconds without another tap. In the late attempt,
-the late tap closes the ad and returns to AP006. Use the activity/package
-transition and visible screen to distinguish an advertiser launch from AP006.
-Measure both tap times
-from the first displayed frame, compare them with fetch and binding events, and
-report any timer/display mismatch. Do not change or assert native-full layout,
-UI, or UX beyond this close gate.
+**Assertions:** With a valid early timing interval, the early tap neither
+closes the ad nor opens the advertiser or underlying AP006 screen. In the
+early attempt, the ad remains displayed at 3.100 s without another tap. With a
+valid late timing interval, the late tap closes the ad and returns to AP006.
+Use the activity/package transition and visible screen to distinguish an
+advertiser launch from AP006. Compare both actual tap intervals with fetch and
+binding events, and report any timer/display mismatch. If a tap misses its
+target window, or its measurement interval cannot be established wholly on the
+intended side of 3.000 s, mark that timing assertion NOT-RUN. Never report it
+as PASS or application FAIL. Do not change or assert native-full layout, UI,
+or UX beyond this close gate.
 
-**Evidence:** Timestamped video or frame sequence showing the first displayed
-frame, observations around 2.900 and 3.100 seconds, both taps, and the resulting
+**Evidence:** Timestamped video or frame sequence showing the first actual
+displayed-ad frame, observations around 2.900 and 3.100 seconds, both taps,
+each actual tap time and measurement uncertainty interval, and the resulting
 screen; activity/package transitions; hierarchy snapshots for the close
-control; and native timeline. If a genuine ad, stable close selector, or
-distinguishable advertiser activity is unavailable, mark the affected
-assertion NOT-RUN.
+control; and native timeline. If a genuine ad, stable close selector,
+distinguishable advertiser activity, or measurable timing interval is
+unavailable, mark the affected assertion NOT-RUN.
 
 ## Case 3: Explore video screenshot and recording protection
 
@@ -201,8 +210,7 @@ After both independent non-author testcase reviews accept this exact digest
 and Sol grants admission, qualification for each device class requires one
 clean positive pass, a clean rerun, and one separate negative-control attempt.
 Keep those three results separate. A class not used here does not gate this
-class. CHE-387 AC3 flake baseline remains a separate required-acceptance
-prerequisite.
+class. CHE-387 AC3 flake baseline is not required for admission or acceptance.
 
 For the negative control, start the pinned app on the exact admitted serial and
 ask Artemis to assert the deliberately false statement that the foreground
