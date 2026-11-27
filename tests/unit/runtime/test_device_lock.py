@@ -733,3 +733,125 @@ def test_managed_avd_does_not_retry_occupied_device(
     broker_rpc.assert_called_once()
     readback.assert_not_called()
     sleep.assert_not_called()
+
+
+# -- CHE-10242: records are published whole, so a paused writer keeps its place --
+
+
+def _age_publications(folder, prefix, seconds):
+    old = time.time() - seconds
+    for path in folder.iterdir():
+        if path.name.startswith(prefix):
+            os.utime(path, (old, old))
+
+
+def _pausing_write(monkeypatch, marker):
+    """Block os.write for a payload holding ``marker``; return (entered, release)."""
+    entered, release = threading.Event(), threading.Event()
+    real_write = os.write
+
+    def write(descriptor, payload):
+        if marker in payload:
+            entered.set()
+            assert release.wait(5)
+        return real_write(descriptor, payload)
+
+    monkeypatch.setattr(os, "write", write)
+    return entered, release
+
+
+def test_a_paused_writer_never_yields_two_owners(tmp_path, monkeypatch):
+    first = DeviceExecutionLock("emulator-5554", "first", session_id="s-first")
+    second = DeviceExecutionLock("emulator-5554", "second", session_id="s-second")
+    entered, release = _pausing_write(monkeypatch, first.token.encode())
+    thread = threading.Thread(target=first._try_acquire_owner_lock_unguarded)
+    thread.start()
+    try:
+        assert entered.wait(5)
+        _age_publications(
+            tmp_path, first.path.name, DeviceExecutionLock._MALFORMED_LOCK_GRACE_SECONDS + 1
+        )
+        for _ in range(3):
+            if second._try_acquire_owner_lock_unguarded():
+                break
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert [first._acquired, second._acquired].count(True) == 1
+    winner = first if first._acquired else second
+    assert json.loads(first.path.read_text())["token"] == winner.token
+    winner.release()
+
+
+def test_a_paused_ticket_keeps_its_place(tmp_path, monkeypatch):
+    entered, release = _pausing_write(monkeypatch, b"paused-ticket")
+    tokens = []
+    thread = threading.Thread(
+        target=lambda: tokens.append(
+            DeviceExecutionLock.reserve("probe", "d1", session_id="paused-ticket")
+        )
+    )
+    thread.start()
+    try:
+        assert entered.wait(5)
+        queue = tmp_path / "artemis-global-device.queue"
+        _age_publications(queue, "", DeviceExecutionLock._MALFORMED_LOCK_GRACE_SECONDS + 1)
+        DeviceExecutionLock.cleanup_stale_locks()
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    (ticket,) = queue.glob("*.wait")
+    assert ticket.name == f"{ticket.name[:20]}-{tokens[0]}.wait"
+    assert ticket.name[:20].isdigit()
+    DeviceExecutionLock.cancel_reservation(tokens[0])
+
+
+def test_reentrant_acquire_by_the_same_token_still_succeeds():
+    lock = DeviceExecutionLock("emulator-5554", "again")
+    assert lock._try_acquire_owner_lock_unguarded()
+    try:
+        assert lock._try_acquire_owner_lock_unguarded()
+    finally:
+        lock.release()
+
+
+def test_hard_link_failure_falls_back_and_warns_once(monkeypatch, caplog):
+    def no_link(*_args, **_kwargs):
+        raise PermissionError("no hard links here")
+
+    monkeypatch.setattr(os, "link", no_link)
+    monkeypatch.setattr(DeviceExecutionLock, "_link_warned", False)
+    with caplog.at_level("WARNING", logger="artemis.runtime.device_lock"):
+        for device in ("emulator-5554", "emulator-5556"):
+            lock = DeviceExecutionLock(device, "fallback")
+            assert lock._try_acquire_owner_lock_unguarded()
+            assert json.loads(lock.path.read_text())["token"] == lock.token
+            lock.release()
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+
+def test_cleanup_removes_only_old_publication_temp_files(tmp_path):
+    queue = tmp_path / "artemis-global-device.queue"
+    queue.mkdir()
+    live = DeviceExecutionLock("emulator-5554", "live")
+    live.acquire()
+    ticket = DeviceExecutionLock.reserve("queued", "emulator-5556")
+    old_temp = tmp_path / "artemis-device-x.lock.aaaa.tmp"
+    old_queue_temp = queue / "0001-t.wait.bbbb.tmp"
+    fresh_temp = tmp_path / "artemis-device-y.lock.cccc.tmp"
+    for path in (old_temp, old_queue_temp, fresh_temp):
+        path.write_text("{}")
+    for path in (old_temp, old_queue_temp):
+        os.utime(path, (time.time() - 61, time.time() - 61))
+    try:
+        DeviceExecutionLock.cleanup_stale_locks()
+        assert not old_temp.exists()
+        assert not old_queue_temp.exists()
+        assert fresh_temp.exists()
+        assert live.path.exists()
+        assert list(queue.glob(f"*-{ticket}.wait"))
+    finally:
+        live.release()
+        DeviceExecutionLock.cancel_reservation(ticket)
