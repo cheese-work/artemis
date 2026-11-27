@@ -31,6 +31,8 @@ var errorCatalog = map[string]string{
 	"SQH-E207": "The selector matches more than one device. Use the id from smartqa-host devices --json.",
 	"SQH-E301": "No host tunnel adapter is available. This core cannot expose a device.",
 	"SQH-E302": "Update activation needs the B3a-3 launcher. The verified artifact is staged only.",
+	"SQH-E303": "Version is not installed, is already installed with different bytes, or is not a valid version.",
+	"SQH-E304": "Launcher state is missing, unreadable or from another contract. The launcher does not guess; reinstall the agent.",
 	"SQH-E401": "User service operation failed. Run service status and check OS user-session support.",
 	"SQH-E402": "This OS lifecycle is not implemented in B3a-1. Windows installer and protected state belong to B3b.",
 }
