@@ -1,0 +1,24 @@
+[Unit]
+Description=Artemis preview egress proxy (Squid, acquisition namespace; not installed by default)
+Documentation=file:///usr/local/libexec/artemis-preview/docs/preview-egress.md
+ConditionPathExists=/run/artemis-preview/egress.hosts
+
+[Service]
+User=artemis-preview-egress
+Group=artemis-preview-egress
+SupplementaryGroups=artemis-preview-runner
+NetworkNamespacePath=/run/netns/artemis-preview-acquire
+ExecStart=/usr/sbin/squid -N -f /etc/artemis-preview/egress-squid.conf
+RuntimeDirectory=artemis-preview-egress
+UMask=0077
+Restart=on-failure
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
