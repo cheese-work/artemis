@@ -173,8 +173,41 @@ def authorized_handoff(conn, guard_path, device_id, proof, now):
     return dict(row)
 
 
-def transfer_claim(conn, claim, consent, lease_id, now):
+def _receipt(conn, event, now, claim, **details):
+    """Queue the deletion receipt in the caller's transaction (the broker audit outbox).
+
+    `actor` is a caller-supplied label, never authenticated: every local process of the
+    same Unix user can assert any value. It is distinct from the claim's owner/run.
+    """
+    import audit
+
+    audit.enqueue(
+        conn,
+        event,
+        now,
+        agent=claim["owner"],
+        run_id=claim["run_id"],
+        issue=claim["reference"],
+        devices=[claim["device_id"]],
+        claim_id=claim["claim_id"],
+        actor_verified=False,
+        **details,
+    )
+
+
+def transfer_claim(conn, claim, consent, lease_id, now, *, actor, actor_run_id):
     """Run only in the transaction that creates the occupying broker lease."""
+    _text(actor, actor_run_id)
+    _receipt(
+        conn,
+        "claim_transfer",
+        now,
+        claim,
+        lease_id=lease_id,
+        actor=actor,
+        actor_run_id=actor_run_id,
+        outcome="transferred",
+    )
     conn.execute(
         "INSERT INTO android_claim_handoffs VALUES (?,?,?,?,?)",
         (claim["claim_id"], lease_id, json.dumps(claim), json.dumps(consent), now),
@@ -232,6 +265,10 @@ class ClaimLedger:
                 "CREATE TABLE IF NOT EXISTS android_claim_handoffs (claim_id TEXT PRIMARY KEY, "
                 "lease_id TEXT NOT NULL UNIQUE, claim TEXT NOT NULL, consent TEXT NOT NULL, "
                 "transferred_at REAL NOT NULL)"
+            )
+            conn.execute(  # same table the broker creates; receipts share its outbox
+                "CREATE TABLE IF NOT EXISTS broker_audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "payload TEXT NOT NULL)"
             )
 
     def _read_source(self, conn):
@@ -379,15 +416,30 @@ class ClaimLedger:
             )
             return claim_id
 
-    def release(self, claim_id, *, owner, run_id):
-        _text(claim_id, owner, run_id)
+    def release(self, claim_id, *, owner, run_id, actor, actor_run_id=None):
+        """Delete an exactly-owned claim and its receipt in one transaction."""
+        _text(claim_id, owner, run_id, actor)
+        if actor_run_id is not None:
+            _text(actor_run_id)
         with self.guard(), sqlite3.connect(self.db_path) as conn:
-            result = conn.execute(
-                "DELETE FROM android_claims WHERE claim_id=? AND owner=? AND run_id=?",
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM android_claims WHERE claim_id=? AND owner=? AND run_id=?",
                 (claim_id, owner, run_id),
-            )
-            if result.rowcount != 1:
+            ).fetchone()
+            if row is None:
                 raise ValueError("claim not yours")
+            conn.execute("DELETE FROM android_claims WHERE claim_id=?", (claim_id,))
+            _receipt(
+                conn,
+                "claim_release",
+                self.clock(),
+                dict(row),
+                actor=actor,
+                actor_run_id=actor_run_id,
+                outcome="deleted",
+            )
 
     def snapshot(self):
         """Owner audit readback, including stale census; never an admission decision."""

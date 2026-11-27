@@ -234,11 +234,72 @@ class ClaimsTests(unittest.TestCase):
             self.take(self.broker, device_id="usb-rig-1")
         self.cancel(caught.exception)
         with self.assertRaises(ValueError):
-            ledger.release(claim, owner="other", run_id="r")
-        ledger.release(claim, owner="android", run_id="r")
+            ledger.release(claim, owner="other", run_id="r", actor="cli:fixture")
+        ledger.release(claim, owner="android", run_id="r", actor="cli:fixture")
         self.take(self.broker, device_id="usb-rig-1", run_id="next", idempotency_key="next")
         with self.assertRaises(ValueError):
             ledger.claim("10.0.0.1:5555", owner="android", run_id="r", reference="CHE-fixture")
+
+    def receipts(self):
+        with sqlite3.connect(self.ledger.db_path) as conn:
+            rows = conn.execute("SELECT payload FROM broker_audit ORDER BY seq").fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def test_release_records_a_receipt_naming_the_actor_apart_from_the_owner(self):
+        ledger = self.live()
+        claim = ledger.claim("10.0.0.1:5555", owner="android", run_id="r", reference="CHE-fixture")
+        before = self.receipts()
+        ledger.release(
+            claim, owner="android", run_id="r", actor="operator:x99", actor_run_id="op-1"
+        )
+        receipt = self.receipts()[len(before) :]
+        self.assertEqual(len(receipt), 1)
+        self.assertEqual(
+            {k: receipt[0][k] for k in receipt[0] if k not in ("time",)},
+            dict(
+                event="claim_release",
+                agent="android",
+                run_id="r",
+                issue="CHE-fixture",
+                device_id="rig-1",
+                claim_id=claim,
+                actor="operator:x99",
+                actor_run_id="op-1",
+                actor_verified=False,
+                outcome="deleted",
+            ),
+        )
+        self.assertRegex(receipt[0]["time"], r" ICT$")
+        self.assertEqual(self.receipts()[: len(before)], before)  # history is never rewritten
+
+    def test_release_without_an_actor_is_refused_and_keeps_the_claim(self):
+        ledger = self.live()
+        claim = ledger.claim("rig-1", owner="android", run_id="r", reference="CHE-fixture")
+        with self.assertRaises(TypeError):
+            ledger.release(claim, owner="android", run_id="r")
+        with self.assertRaises(ValueError):
+            ledger.release(claim, owner="android", run_id="r", actor=" ")
+        self.assertEqual([c["claim_id"] for c in ledger.snapshot()["claims"]], [claim])
+
+    def test_wrong_owner_release_leaves_claim_and_writes_no_receipt(self):
+        ledger = self.live()
+        claim = ledger.claim("rig-1", owner="android", run_id="r", reference="CHE-fixture")
+        before = self.receipts()
+        for owner, run in (("other", "r"), ("android", "other")):
+            with self.assertRaises(ValueError):
+                ledger.release(claim, owner=owner, run_id=run, actor="operator:x99")
+        self.assertEqual([c["claim_id"] for c in ledger.snapshot()["claims"]], [claim])
+        self.assertEqual(self.receipts(), before)
+
+    def test_receipt_failure_rolls_back_the_deletion(self):
+        ledger = self.live()
+        claim = ledger.claim("rig-1", owner="android", run_id="r", reference="CHE-fixture")
+        before = self.receipts()
+        with patch("audit.enqueue", side_effect=RuntimeError("fixture audit failure")):
+            with self.assertRaisesRegex(RuntimeError, "fixture audit failure"):
+                ledger.release(claim, owner="android", run_id="r", actor="operator:x99")
+        self.assertEqual([c["claim_id"] for c in ledger.snapshot()["claims"]], [claim])
+        self.assertEqual(self.receipts(), before)
 
     def test_offered_reservations_are_occupied_for_both_writers(self):
         ledger = self.live()
@@ -315,7 +376,7 @@ class ClaimsTests(unittest.TestCase):
             ),
         ):
             self.assertFalse(sdk_lock(self.root, "usb-rig-1")._try_acquire_owner_lock())
-        ledger.release(claim, owner="android", run_id="r")
+        ledger.release(claim, owner="android", run_id="r", actor="cli:fixture")
         with self.sdk_env(), patch.dict(os.environ, {"ARTEMIS_DEVICE_CLAIMS_DB": ""}):
             self.assertFalse(sdk_lock(self.root, "usb-rig-1")._try_acquire_owner_lock())
 

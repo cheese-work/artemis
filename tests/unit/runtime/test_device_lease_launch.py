@@ -190,6 +190,40 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT count(*) FROM broker_groups").fetchone(), (1,))
             original = conn.execute("SELECT claim FROM android_claim_handoffs").fetchone()[0]
         self.assertEqual(json.loads(original), before[0])
+        with sqlite3.connect(self.path) as conn:
+            receipts = [
+                json.loads(r[0])
+                for r in conn.execute("SELECT payload FROM broker_audit ORDER BY seq")
+                if json.loads(r[0])["event"] == "claim_transfer"
+            ]
+        # One receipt for the one committed transfer; the idempotent retry adds none.
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(
+            {
+                k: receipts[0][k]
+                for k in (
+                    "agent",
+                    "run_id",
+                    "claim_id",
+                    "device_id",
+                    "actor",
+                    "actor_run_id",
+                    "actor_verified",
+                    "outcome",
+                )
+            },
+            dict(
+                agent="agent",
+                run_id="run-1",
+                claim_id=claim,
+                device_id=self.device.device_id,
+                actor="agent",
+                actor_run_id="run-1",
+                actor_verified=False,
+                outcome="transferred",
+            ),
+        )
+        self.assertTrue(receipts[0]["lease_id"])
 
     def sdk_handoff(self, phase):
         from artemis.runtime.device_lock import DeviceExecutionLock
