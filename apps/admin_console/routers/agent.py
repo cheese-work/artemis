@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-import functools
 import json
 import logging
 import os
 from pathlib import Path
 import re
+import threading
 from sys import float_info
 import time
 from typing import Any, NoReturn
+from uuid import UUID
 
 import anyio
 from fastapi import APIRouter, Depends, Request, Response, WebSocket
@@ -232,10 +233,34 @@ def _staging_root() -> Path:
     return get_app_dir() / "recording-uploads"
 
 
-@functools.cache
+_upload_store_guard = threading.Lock()
+_upload_store_instance: ru.RecordingUploadStore | None = None
+
+
 def _upload_store() -> ru.RecordingUploadStore:
     # One instance per process: its lock and the per-host upload limit cover every request.
-    return ru.RecordingUploadStore(_staging_root())
+    # Construction creates and recovers the staging dir (blocking IO); call it off the loop.
+    global _upload_store_instance
+    with _upload_store_guard:
+        if _upload_store_instance is None:
+            _upload_store_instance = ru.RecordingUploadStore(_staging_root())
+        return _upload_store_instance
+
+
+def _reset_upload_store() -> None:
+    global _upload_store_instance
+    with _upload_store_guard:
+        _upload_store_instance = None
+
+
+_LEGACY_RECORDING_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def _store_recording_id(recording_id: str) -> str:
+    """Rows written before the dashed-UUID fix hold 32-hex ids; the store takes dashed UUIDs."""
+    if _LEGACY_RECORDING_ID.fullmatch(recording_id):
+        return str(UUID(recording_id))
+    return recording_id
 
 
 _UPLOAD_ERRORS: dict[type[Exception], tuple[int, str]] = {
@@ -287,10 +312,11 @@ async def _read_capped(request: Request, limit: int) -> bytes:
     return b"".join(parts)
 
 
-async def _upload_call(host_id: str, fn: Any, *args: Any) -> Any:
+async def _upload_call(host_id: str, method: str, *args: Any) -> Any:
     """Run a blocking store call off the event loop and map its failures to API errors."""
     try:
-        return await anyio.to_thread.run_sync(fn, host_id, *args)
+        store = await anyio.to_thread.run_sync(_upload_store)
+        return await anyio.to_thread.run_sync(getattr(store, method), host_id, *args)
     except (*_UPLOAD_ERRORS, ru.OffsetConflict) as error:
         raise _upload_failure(error) from error
 
@@ -318,7 +344,7 @@ async def create_upload(
     if not assigned:
         raise _upload_error(404, "recording_unknown", "recording unknown")
     upload_id, offset = await _upload_call(
-        host["id"], _upload_store().create, session_id, recording_id, length, digest
+        host["id"], "create", session_id, _store_recording_id(recording_id), length, digest
     )
     return {"upload_id": upload_id, "offset": offset}
 
@@ -327,7 +353,7 @@ async def create_upload(
 async def upload_offset(
     upload_id: str, host: dict = Depends(require_agent_token("uploads"))
 ) -> dict:
-    return {"offset": await _upload_call(host["id"], _upload_store().offset, upload_id)}
+    return {"offset": await _upload_call(host["id"], "offset", upload_id)}
 
 
 @router.patch("/uploads/{upload_id}")
@@ -343,7 +369,7 @@ async def append_upload(
     except ru.ChunkTooLarge as error:
         raise _upload_failure(error) from error
     new_offset = await _upload_call(
-        host["id"], _upload_store().append, upload_id, int(offset), chunk, checksum[1]
+        host["id"], "append", upload_id, int(offset), chunk, checksum[1]
     )
     return {"offset": new_offset}
 
@@ -352,7 +378,7 @@ async def append_upload(
 async def abort_upload(
     upload_id: str, host: dict = Depends(require_agent_token("uploads"))
 ) -> Response:
-    await _upload_call(host["id"], _upload_store().abort, upload_id)
+    await _upload_call(host["id"], "abort", upload_id)
     return Response(status_code=204)
 
 

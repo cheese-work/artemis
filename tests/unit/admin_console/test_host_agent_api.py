@@ -1514,9 +1514,9 @@ CHUNK_LIMIT = 8 * 1024 * 1024
 def upload_staging(tmp_path, monkeypatch):
     """One private staging root per test, outside everything the server scans."""
     monkeypatch.setattr(agent_router, "_staging_root", lambda: tmp_path / "recording-uploads")
-    agent_router._upload_store.cache_clear()
+    agent_router._reset_upload_store()
     yield tmp_path / "recording-uploads"
-    agent_router._upload_store.cache_clear()
+    agent_router._reset_upload_store()
 
 
 def _agent_headers(admin, key=None):
@@ -1579,6 +1579,37 @@ def test_upload_create_is_bound_to_the_assigned_host_and_session(admin, recordin
     unassigned = "00000000-0000-4000-8000-000000000000"
     response = _create_upload(admin, owner_headers, unassigned, b"x")
     assert response.status_code == 404 and response.json()["code"] == "recording_unknown"
+
+
+def test_upload_create_accepts_a_legacy_32_hex_recording_id(admin, recording_store):
+    host_id, headers = _agent_headers(admin)
+    dashed = recording_store.assign(host_id, SESSION, 1).recording_id
+    legacy = dashed.replace("-", "")
+    with closing(sqlite3.connect(host_registry.db_path)) as conn, conn:
+        conn.execute(
+            "UPDATE host_recording_assignments SET recording_id = ? WHERE recording_id = ?",
+            (legacy, dashed),
+        )
+    response = _create_upload(admin, headers, legacy, b"abc")
+    assert response.status_code == 200, response.text
+    assert response.json()["offset"] == 0
+
+
+def test_upload_store_is_built_off_the_event_loop(admin, recording_store):
+    built_off_loop = []
+    real = agent_router.ru.RecordingUploadStore
+
+    def spy(*args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            built_off_loop.append(False)
+        except RuntimeError:
+            built_off_loop.append(True)
+        return real(*args, **kwargs)
+
+    with patch.object(agent_router.ru, "RecordingUploadStore", spy):
+        _assigned_upload(admin, recording_store, b"abc")
+    assert built_off_loop == [True]
 
 
 def test_upload_ids_are_private_to_their_host(admin, recording_store):
