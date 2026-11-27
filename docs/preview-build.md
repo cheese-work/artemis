@@ -1,13 +1,14 @@
 # Offline preview build: Node and Python inputs
 
 The preview controller separates networked acquisition from offline hook
-execution. This stage delivers the showcase UI build, not a runnable preview:
-`--target preview` keeps its non-root user (UID/GID 10001),
-`ARTEMIS_PREVIEW_PROFILE=1` and Uvicorn command. It installs the Python app
-and its locked dependencies from a hash-locked wheelhouse (see "Python
-inputs"), but no system libraries yet. Do not activate this target until
-the app-start proof lands. The live console remains the
-default target and its Dockerfile stages are unchanged.
+execution. `--target preview` keeps its non-root user (UID/GID 10001),
+`ARTEMIS_PREVIEW_PROFILE=1` and Uvicorn command. It builds the showcase UI,
+and installs the Python app and its locked dependencies from a hash-locked
+wheelhouse (see "Python inputs"), with no network in any `RUN`. It adds no
+system libraries: OpenCV comes from `opencv-python-headless`, which needs
+none. The app-start proof passed on X99 (see "App-start proof"), so the
+target is usable. The live console remains the default target and its
+Dockerfile stages are unchanged.
 
 ## 1. Acquire without running hooks
 
@@ -123,9 +124,35 @@ Same split: a networked acquisition, then a build with no network in any
    `requirements.txt` with `--no-index --require-hashes`, then the two local
    wheels with `--no-index --no-deps`. The live console stages are unchanged.
 
-Known gap for the app-start proof: system libraries are absent (for example
-`import cv2` needs `libxcb.so.1`), and the app writes `/app/traces` as UID
-10001. Neither is handled here.
+## App-start proof
+
+The preview image must start with no network, as UID 10001. The host daemon
+supplies what the image does not: a writable `ARTEMIS_APP_DIR` parent (`/app`
+is not writable by the preview user), a writable `/tmp`, the Cloudflare Access
+settings and a public JWKS bundle (`ARTEMIS_PREVIEW_JWKS_BUNDLE`), and the
+fixture emails. Run on X99 with a throwaway key; the token is signed by the
+same key:
+
+```sh
+docker run -d --name proof --network none \
+  --tmpfs /tmp:uid=10001,gid=10001 --tmpfs /scratch:uid=10001,gid=10001,mode=700 \
+  -v "$PWD/proof:/proof:ro" -e ARTEMIS_APP_DIR=/scratch \
+  -e ARTEMIS_AUTH_MODE=cloudflare -e ARTEMIS_CF_ACCESS_AUD=proof-aud \
+  -e ARTEMIS_CF_ACCESS_TEAM_DOMAIN=proof -e ARTEMIS_PREVIEW_JWKS_BUNDLE=/proof/jwks.json \
+  -e ARTEMIS_ADMIN_EMAILS=admin@example.test \
+  -e ARTEMIS_PREVIEW_QA_EMAILS=qa1@example.test,qa2@example.test <image>
+```
+
+Result (image `sha256:ee11b581262fda4bcdf11bd8922deab0af6de8537aabbedd49768cbd86bb3641`,
+`Config.User` `10001:10001`): the server logs "Application startup complete".
+From inside the container, `GET /` returns 401 without the
+`Cf-Access-Jwt-Assertion` header and 200 with a valid token;
+`GET /api/system/readiness` returns 200 with the token.
+
+Negative proof: append `notinwheelhouse==1.0 --hash=sha256:00...00` to a
+copy of `requirements.txt` in the `preview-python-inputs` context. The build
+fails at `pip install --no-index` with
+`ERROR: No matching distribution found for notinwheelhouse==1.0` (exit 1).
 
 ## Checks
 

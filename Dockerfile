@@ -39,6 +39,7 @@ FROM python:3.12-slim AS preview-wheel-builder
 
 WORKDIR /build
 COPY artemis/ ./artemis/
+COPY device_lease/ ./device_lease/
 COPY apps/ ./apps/
 COPY mcp_server/ ./mcp_server/
 COPY third_party/ ./third_party/
