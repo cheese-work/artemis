@@ -845,7 +845,10 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "qa_or_service"
     if methods == {"POST"} and path in _PUBLIC_MUTATING_PATHS:
         return "public"
-    if path == "/api/runs/{session_id}/annotations/{annotation_id}" and methods in (
+    if path in (
+        "/api/runs/{session_id}/annotations/{annotation_id}",
+        "/api/runs/{session_id}/comments/{comment_id}",
+    ) and methods in (
         {"PATCH"},
         {"DELETE"},
     ):

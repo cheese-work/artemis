@@ -44,7 +44,7 @@ Identity headers are trusted only behind the authenticating proxy; see
 | `PATCH, DELETE /api/runs/{session_id}/annotations/{annotation_id}` | Edit, resolve or delete an annotation. |
 | `GET /api/runs/{session_id}/annotations/{annotation_id}/evidence` | Resolve an annotation anchor. |
 | `GET, POST /api/runs/{session_id}/comments` | List or add comments. |
-| `PATCH, DELETE /api/runs/{session_id}/comments/{comment_id}` | Not yet implemented (CHE-7704). |
+| `PATCH, DELETE /api/runs/{session_id}/comments/{comment_id}` | Edit or delete a comment. |
 | `GET /api/stream` | Existing SSE stream; carries the board events below. |
 
 Every route is classified in the access-control and preview route registries
@@ -474,11 +474,23 @@ write budget with `POST /api/runs/{session_id}/comments` (default 30 writes in
 `author` is the principal's email, or `null` when no email is recorded.
 Timestamps use ISO 8601, and `edited_at` is `null` on creation.
 
-Both routes are public-tier and preview `REAL`, subject to run visibility. An
+- `PATCH /api/runs/{session_id}/comments/{comment_id}` accepts only
+  `{"body": "..."}` and returns 200 with the comment, body unchanged as plain
+  text and `edited_at` set. Only the author can edit, admins included. A
+  non-author gets `comment_not_permitted` 403.
+- `DELETE /api/runs/{session_id}/comments/{comment_id}` returns 204 with no body.
+  The author or an admin can delete. Any other caller gets
+  `comment_not_permitted` 403.
+- A comment id that does not exist, or that belongs to another run, returns
+  `run_not_visible` 404, the same as an unreadable run. Both routes count
+  against the shared annotation and comment write budget; a refused call
+  (403, 404) spends none.
+
+All four routes are public-tier and preview `REAL`, subject to run visibility. An
 unreadable, unknown, deleted, or prefix-only run returns `run_not_visible` 404.
 Anyone who can read the run and has a verified writing identity can add a
-comment; these routes do not return `comment_not_permitted`. In authenticated
-modes a POST without a verified issuer and subject returns `actor_required` 401.
+comment; create does not return `comment_not_permitted`. In authenticated
+modes a write without a verified issuer and subject returns `actor_required` 401.
 Invalid JSON or a rejected body returns `request_invalid` 422 with the configured
 character cap in the hint. Exceeding the shared annotation and comment write
 budget returns `rate_limited` 429 with `Retry-After`.

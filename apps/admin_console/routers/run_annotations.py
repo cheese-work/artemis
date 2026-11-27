@@ -76,7 +76,7 @@ class CommentRoute(APIRoute):
                     raise notes.invalid_comment_body() from exc
                 raise
             except AdminAPIError as exc:
-                if request.method == "POST" and exc.code == "not_signed_in":
+                if request.method != "GET" and exc.code == "not_signed_in":
                     raise _note_actor_required() from exc
                 raise
 
@@ -296,7 +296,56 @@ def create_comment(
         return _present_comment(conn, comment)
 
 
-def _require_author(annotation: notes.Annotation, principal_id: str) -> None:
+def _comment(conn, session_id: str, comment_id: str) -> notes.Comment:
+    comment = notes.get_comment(conn, comment_id)
+    if comment is None or comment.session_id != session_id:
+        raise run_not_visible()
+    return comment
+
+
+@comment_router.patch(
+    "/api/runs/{session_id}/comments/{comment_id}", dependencies=[Depends(evidence_scope)]
+)
+def edit_comment(
+    session_id: str,
+    comment_id: str,
+    body: CommentCreate,
+    identity: AccessIdentity = Depends(public_tier),
+):
+    with _database(session_id, identity, include_comments=True) as conn:
+        # Run visibility and comment existence answer before the actor check; the principal
+        # lookup writes on its own connection, so it must run before BEGIN IMMEDIATE.
+        _comment(conn, session_id, comment_id)
+        principal_id = note_principal(identity)
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            _require_author(_comment(conn, session_id, comment_id), principal_id)
+            require_note_write(principal_id)
+            return _present_comment(conn, notes.edit_comment(conn, comment_id, body.body))
+
+
+@comment_router.delete(
+    "/api/runs/{session_id}/comments/{comment_id}",
+    status_code=204,
+    dependencies=[Depends(evidence_scope)],
+)
+def delete_comment(
+    session_id: str, comment_id: str, identity: AccessIdentity = Depends(public_tier)
+):
+    with _database(session_id, identity, include_comments=True) as conn:
+        _comment(conn, session_id, comment_id)
+        principal_id = note_principal(identity)
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            comment = _comment(conn, session_id, comment_id)
+            if not scope_for(identity).admin:
+                _require_author(comment, principal_id)
+            require_note_write(principal_id)
+            notes.delete_comment(conn, comment_id)
+    return Response(status_code=204)
+
+
+def _require_author(annotation: notes.Annotation | notes.Comment, principal_id: str) -> None:
     if annotation.author_principal_id != principal_id:
         raise AdminAPIError(
             403,

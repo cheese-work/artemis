@@ -163,6 +163,32 @@ def list_comments(conn: sqlite3.Connection, session_id: str) -> list[Comment]:
     return [Comment(*row) for row in rows]
 
 
+def get_comment(conn: sqlite3.Connection, comment_id: str) -> Comment | None:
+    row = conn.execute(
+        "SELECT comment_id, session_id, author_principal_id, body, created_at, edited_at "
+        "FROM run_comments WHERE comment_id = ?",
+        (comment_id,),
+    ).fetchone()
+    return Comment(*row) if row else None
+
+
+def edit_comment(conn: sqlite3.Connection, comment_id: str, body: str) -> Comment:
+    """Replace the body with the same checks as ``add_comment`` and set ``edited_at``."""
+    if not 1 <= len(body) <= config.COMMENT_BODY_MAX_CHARS or "\x00" in body:
+        raise invalid_comment_body()
+    with conn:
+        conn.execute(
+            "UPDATE run_comments SET body = ?, edited_at = ? WHERE comment_id = ?",
+            (body, time.time(), comment_id),
+        )
+    return get_comment(conn, comment_id)
+
+
+def delete_comment(conn: sqlite3.Connection, comment_id: str) -> None:
+    with conn:
+        conn.execute("DELETE FROM run_comments WHERE comment_id = ?", (comment_id,))
+
+
 def anchor_invalid(detail: str) -> AdminAPIError:
     return AdminAPIError(
         422,

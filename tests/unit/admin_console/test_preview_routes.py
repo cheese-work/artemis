@@ -60,6 +60,11 @@ def test_run_comment_routes_use_real_preview_handlers(method):
     assert f"{method} /api/runs/{{session_id}}/comments" in pr.REAL
 
 
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+def test_run_comment_item_routes_use_real_preview_handlers(method):
+    assert f"{method} /api/runs/{{session_id}}/comments/{{comment_id}}" in pr.REAL
+
+
 @pytest.mark.parametrize(
     "key",
     [
