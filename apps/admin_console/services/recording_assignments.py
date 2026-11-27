@@ -113,7 +113,7 @@ class RecordingAssignmentStore:
                 ON CONFLICT(session_id) DO NOTHING
                 """,
                 (
-                    uuid4().hex,
+                    str(uuid4()),
                     host_id,
                     session_id,
                     generation,
@@ -126,6 +126,18 @@ class RecordingAssignmentStore:
                 "SELECT * FROM host_recording_assignments WHERE session_id = ?", (session_id,)
             ).fetchone()
             return RecordingAssignment._from_row(row)
+
+    def is_assigned(self, host_id: str, recording_id: str, session_id: str) -> bool:
+        """Return whether this host holds the recording assignment for this session."""
+        with self._db() as conn:
+            return (
+                conn.execute(
+                    "SELECT 1 FROM host_recording_assignments "
+                    "WHERE recording_id = ? AND host_id = ? AND session_id = ?",
+                    (recording_id, host_id, session_id),
+                ).fetchone()
+                is not None
+            )
 
     def request_stop(self, session_id: str) -> bool:
         """Return whether a recording assignment transitioned to stop."""

@@ -205,6 +205,10 @@ DISABLED = frozenset(
         "POST /api/agent/challenge",
         "POST /api/agent/renew",
         "POST /api/agent/unenroll",
+        "POST /api/agent/uploads",
+        "GET /api/agent/uploads/{upload_id}",
+        "PATCH /api/agent/uploads/{upload_id}",
+        "DELETE /api/agent/uploads/{upload_id}",
         f"{WEBSOCKET} /api/agent/connect",
     }
 )

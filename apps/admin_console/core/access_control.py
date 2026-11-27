@@ -84,7 +84,9 @@ class AdminAPIError(Exception):
         fix: str,
         retry_after: int | None = None,
         docs_url: str | None = None,
+        headers: dict[str, str] | None = None,
     ):
+        self.headers = headers or {}
         self.status_code = status_code
         self.detail = detail
         self.code = code
@@ -97,7 +99,7 @@ def _error_response(exc: AdminAPIError) -> JSONResponse:
     content = {"detail": exc.detail, "code": exc.code, "fix": exc.fix}
     if exc.docs_url is not None:
         content["docs_url"] = exc.docs_url
-    headers = {}
+    headers = dict(exc.headers)
     if exc.retry_after is not None:
         content["retryable"] = True
         headers["Retry-After"] = str(exc.retry_after)
@@ -781,6 +783,8 @@ _AGENT_PATHS = {
     "/api/agent/challenge": {"POST"},
     "/api/agent/renew": {"POST"},
     "/api/agent/unenroll": {"POST"},
+    "/api/agent/uploads": {"POST"},
+    "/api/agent/uploads/{upload_id}": {"GET", "PATCH", "DELETE"},
 }
 
 # Owner-or-admin actions: the route guard needs a signed-in user; the handler
@@ -821,7 +825,7 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
             }
             else None
         )
-    if methods == _AGENT_PATHS.get(path):
+    if len(methods) == 1 and methods <= _AGENT_PATHS.get(path, set()):
         return "agent"
     if path == "/api/system/shutdown" and methods == {"POST"}:
         return "lifecycle"
