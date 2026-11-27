@@ -213,6 +213,22 @@ both writer sources, the shared claims guard, canonical occupancy, FIFO conflict
 and restart reconciliation are still required. All owner-file and process reads
 occur before the SQLite writer transaction.
 
+#### Cold AVD with no broker lease (CHE-9719, source only)
+
+A wiped or stopped AVD that never held a broker lease has no former holder, so the
+`release` object may take the `unleased` form instead of `holder`:
+`{"verifier": "<leader>", "unleased": true, "evidence": "<ref>", "passed": true}`.
+The same verifier rules apply (configured leader, not the principal or agent). A
+mixed `holder` + `unleased` object is refused. This is not a lease: no historical
+lease is created. The committed `start` writes one audit event, `unleased_recovery`,
+with the new lease ID, verifier and evidence in the same transaction. An
+idempotent retry replays it without a second event. An existing non-released group
+for the device still blocks the start, so a quarantined lease keeps its
+`recover-quarantine` and leader-verification path. Target registration is a registry
+row of its own (`x99_api35_medium_phone`, `emulator-5556` and `127.0.0.1:5557`,
+console 5556, ADB 5557); never alias `emulator-5570` to it. The row's paths and
+digests come from the host owner at activation, not from this source.
+
 Startup tickets share the existing queue. A ticket or offer grants no access.
 After parking, a new managed run needs a fresh scoped owner grant to use
 `claim-startup`; ordinary `claim` refuses startup tickets. Idempotent retries

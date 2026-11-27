@@ -1790,4 +1790,14 @@ class Broker:
                 actor_run_id=run_id,
             )
         response = self._view(conn, lease_id)
+        if proof and proof["release"].get("unleased"):
+            # Audit-only: the recovery of unleased state is recorded against the new lease.
+            self._event(
+                conn,
+                "unleased_recovery",
+                now,
+                response,
+                verifier=proof["release"]["verifier"],
+                evidence=proof["release"]["evidence"],
+            )
         return response
