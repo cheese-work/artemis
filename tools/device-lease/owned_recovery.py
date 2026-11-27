@@ -239,7 +239,9 @@ class OwnedRecovery:
         try:
             remaining()
             changes = self._changes(group)
-            work = [c for c in changes if c["kind"] == "work"]
+            # The broker journals a root-only manifest at grant; an owner-recorded one
+            # for the same device is later in the journal and supersedes it.
+            work = list({c["device_id"]: c for c in changes if c["kind"] == "work"}.values())
             devices = {d["device_id"] for d in group["devices"]}
             if (
                 group["binding"].get("mode") not in {"local", "managed"}
