@@ -62,7 +62,7 @@ dependencies = [
     "sseclient-py>=1.8.0",
     # Image, Video & Multimodal Perception
     "pillow>=10.0.0",
-    "opencv-python>=4.9.0.80",
+    "opencv-python-headless>=4.9.0.80",
     "imageio-ffmpeg>=0.5.1",
     "matplotlib>=3.8.0",
     "numpy>=1.26.0",

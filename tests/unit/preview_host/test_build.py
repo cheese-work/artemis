@@ -426,6 +426,8 @@ def test_preview_installs_python_only_from_the_verified_wheelhouse():
             re.M,
         ), project
     assert "pip install --no-cache-dir --no-index --require-hashes" in wheel_runs
+    # setup.py ships device_lease and the admin console imports it at startup.
+    assert "COPY device_lease/ ./device_lease/" in stages["preview-wheel-builder"].decode()
     preview = re.sub(r"\\\n\s*", " ", stages["preview"].decode())
     assert re.search(
         r"^RUN --network=none .*from=preview-python-inputs.* pip install .*--no-index --require-hashes .*-r \S*requirements\.txt",
@@ -436,6 +438,22 @@ def test_preview_installs_python_only_from_the_verified_wheelhouse():
         r"pip install .*--no-index --no-deps /wheels/artemis_client-\S+\.whl /wheels/artemis-\S+\.whl",
         preview,
     )
+
+
+def test_opencv_is_the_headless_build_in_pyproject_and_lock():
+    """GUI OpenCV needs libxcb, libGL and libglib, which python:3.12-slim lacks (CHE-9898)."""
+    import tomllib
+
+    names = [
+        re.split(r"[<>=!~ ;\[]", dep, 1)[0].lower().replace("_", "-")
+        for dep in tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
+    ]
+    assert "opencv-python-headless" in names
+    assert not {"opencv-python", "opencv-contrib-python"} & set(names)
+    packages = tomllib.loads((ROOT / "uv.lock").read_text())["package"]
+    locked = {package["name"] for package in packages}
+    assert "opencv-python-headless" in locked
+    assert not {"opencv-python", "opencv-contrib-python"} & locked
 
 
 def _stages() -> dict[str, bytes]:
