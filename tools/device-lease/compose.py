@@ -239,15 +239,21 @@ def startup_reader(path, max_age, registry, leader_id, clock=time.time):
         ):
             raise ValueError("startup identity mismatch")
         release, grant = row["release"], row["grant"]
+        # CHE-9719: a cold AVD with no broker lease has no former holder. The leader's
+        # `unleased` reconciliation replaces `holder`; no historical lease is invented.
+        keys = {"verifier", "evidence", "passed"} | (
+            {"unleased"} if isinstance(release, dict) and "unleased" in release else {"holder"}
+        )
         if (
             not isinstance(release, dict)
-            or set(release) != {"verifier", "holder", "evidence", "passed"}
+            or set(release) != keys
+            or ("unleased" in keys and release["unleased"] is not True)
             or release["verifier"] != leader_id
-            or release["verifier"] in {release["holder"], row["principal"], row["agent_id"]}
+            or release["verifier"] in {release.get("holder"), row["principal"], row["agent_id"]}
             or release["passed"] is not True
             or any(
                 not isinstance(release[k], str) or not release[k].strip()
-                for k in ("holder", "evidence")
+                for k in keys & {"holder", "evidence"}
             )
             or not isinstance(grant, dict)
             or set(grant) != {"reference", "observed_at", "expires_at"}
