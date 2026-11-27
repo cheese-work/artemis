@@ -20,6 +20,11 @@ is never touched. Enforcement is off until an admin enables it, and enabling
 needs a dry-run report for the same window first. A delete tombstones the run
 at once (the catalog then answers "removed") and removes artifacts when no
 download lease is active; otherwise the cleanup is deferred, see ``run_leases``.
+
+An expired run that has notes (annotations or comments) is not deleted: its media
+expires instead. Its steps and recordings are tombstoned, its recording files and
+own screenshots are removed, and the run, session and step rows stay so the notes
+keep their run and its authorization context.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ try:
 except ImportError:
     from apps.admin_console.database.connection import db_session
 
+from apps.admin_console.database.repositories import annotation_repository as notes
 from apps.admin_console.services import run_leases, run_purge, run_settings
 from apps.admin_console.services.run_artifacts import RunLibraryError, library_paths
 
@@ -147,19 +153,54 @@ def _expired(rows, days: int, now: float) -> list:
     )
 
 
+def _has_expiry_table(conn) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'run_media_expiry'").fetchone()
+        is not None
+    )
+
+
+def _has_notes(conn, session_id: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM run_annotations WHERE session_id = ? "
+            "UNION ALL SELECT 1 FROM run_comments WHERE session_id = ?",
+            (session_id, session_id),
+        ).fetchone()
+        is not None
+    )
+
+
+def _plan(conn, expired: list) -> tuple[list, list]:
+    """(delete, expire media) among the unprotected expired runs.
+
+    A run whose media already expired is in neither list: deleting it is a later stage.
+    Without the notes tables (never migrated) every run is a delete.
+    """
+    rows = [r for r in expired if _protection(r) is None]
+    if not _has_expiry_table(conn):
+        return rows, []
+    done = {r[0] for r in conn.execute("SELECT session_id FROM run_media_expiry")}
+    delete, expire = [], []
+    for r in rows:
+        if r["session_id"] in done:
+            continue
+        (expire if _has_notes(conn, r["session_id"]) else delete).append(r)
+    return delete, expire
+
+
 def dry_run(days: int | None = None) -> dict[str, Any]:
-    """Exactly what enforcement would delete now; deletes nothing and records the review."""
+    """Exactly what enforcement would delete or expire now; changes nothing and records the review."""
     db_path, _ = library_paths()
     days = _check_days(days) if days is not None else get_settings()["days"]
     now = time.time()
     with db_session(db_path) as conn:
         expired = _expired(_runs(conn), days, now)
+        delete, expire = _plan(conn, expired)
     run_settings.write(db_path, {"retention_dry_run_days": days})
-    return {
-        "dry_run": True,
-        "days": days,
-        "generated_at": now,
-        "would_delete": [
+
+    def listing(rows) -> list[dict[str, Any]]:
+        return [
             {
                 "session_id": r["session_id"],
                 "prompt": (r["prompt"] or "")[:200],
@@ -167,9 +208,15 @@ def dry_run(days: int | None = None) -> dict[str, Any]:
                 "ended_at": r["ended"],
                 "expires_at": r["ended"] + days * DAY,
             }
-            for r in expired
-            if _protection(r) is None
-        ],
+            for r in rows
+        ]
+
+    return {
+        "dry_run": True,
+        "days": days,
+        "generated_at": now,
+        "would_delete": listing(delete),
+        "would_expire_media": listing(expire),
         "protected": _protected_counts(expired),
     }
 
@@ -305,16 +352,91 @@ def clear_all(confirm_count: int) -> dict[str, Any]:
     return {**_delete_all(targets, "admin_clear_all"), "skipped": _protected_counts(rows)}
 
 
+def _expire_media(session_id: str) -> str | None:
+    """Expire the media of one noted run: "done", "deferred" (files remain) or None (not expired).
+
+    The tombstones and the expiry record commit together, with the guards (terminal, no
+    pending upload, not pinned, not already expired, has notes, no active download lease)
+    checked again inside that transaction. The files go after the commit; a failure there
+    is retried by the next sweep.
+    """
+    db_path, _ = library_paths()
+    with db_session(db_path) as conn:
+        if not _has_expiry_table(conn):
+            return None
+        run_leases.begin_immediate(conn)
+        with conn:
+            guarded = conn.execute(
+                "SELECT 1 FROM run_meta WHERE session_id = ? AND deleted_at IS NULL AND pinned = 0"
+                + _GUARDS_SQL,
+                (session_id, *sorted(TERMINAL), *_PENDING_TRANSFER, *_PENDING_CAPTURE),
+            ).fetchone()
+            if (
+                guarded is None
+                or not _has_notes(conn, session_id)
+                or run_leases.is_leased(conn, session_id)
+                or not notes.expire_run_media(conn, session_id)
+            ):
+                return None
+    ok, removed = attempt(_remove_media, session_id)
+    return "done" if ok and removed else "deferred"
+
+
+def _remove_media(session_id: str) -> bool:
+    """Remove the files of an expired run; False (nothing removed) while a download lease is active.
+
+    The lease check, the file removal and the row updates run in one write transaction.
+    A lease is admitted by a write, so it either committed before this transaction began
+    (seen here, the removal waits for the next sweep) or waits for this commit (the files
+    are gone, as the tombstones already say). Neither path reads files while they go.
+    """
+    db_path, traces = library_paths()
+    with db_session(db_path) as conn:
+        run_leases.begin_immediate(conn)
+        with conn:
+            if run_leases.is_leased(conn, session_id):
+                return False
+            names = run_purge.remove_media(db_path, traces, session_id, logs=False)
+            for column in ("pre_image_name", "post_image_name"):
+                conn.executemany(
+                    f"UPDATE steps SET {column} = NULL WHERE session_id = ? AND {column} = ?",
+                    [(session_id, n) for n in names],
+                )
+            conn.executemany("DELETE FROM images WHERE image_name = ?", [(n,) for n in names])
+            conn.execute(
+                "UPDATE run_media_expiry SET files_removed = 1 WHERE session_id = ?", (session_id,)
+            )
+    return True
+
+
+def _finish_media_expiries() -> int:
+    """Remove the files of runs whose media expiry was recorded but not finished."""
+    db_path, _ = library_paths()
+    with db_session(db_path) as conn:
+        if not _has_expiry_table(conn):
+            return 0
+        due = [
+            row[0]
+            for row in conn.execute(
+                "SELECT session_id FROM run_media_expiry WHERE files_removed = 0"
+            )
+        ]
+    return sum(attempt(_remove_media, session_id) == (True, True) for session_id in due)
+
+
 def enforce() -> dict[str, Any]:
-    """Delete the runs a dry run would list. Refused while enforcement is off."""
+    """Delete, or expire the media of, the runs a dry run would list. Refused while enforcement is off."""
     settings = get_settings()
     if not settings["enabled"]:
         raise RunLibraryError(409, "retention_disabled")
     db_path, _ = library_paths()
+    _finish_media_expiries()
     with db_session(db_path) as conn:
-        expired = _expired(_runs(conn), settings["days"], time.time())
-    ids = [r["session_id"] for r in expired if _protection(r) is None]
-    result = _delete_all(ids, "retention")
+        delete, expire = _plan(conn, _expired(_runs(conn), settings["days"], time.time()))
+    result: dict[str, Any] = _delete_all([r["session_id"] for r in delete], "retention")
+    result["media_expired"] = [
+        r["session_id"] for r in expire if attempt(_expire_media, r["session_id"])[1] is not None
+    ]
     run_settings.write(db_path, {"retention_last_run_at": time.time()})
     return result
 
@@ -347,7 +469,7 @@ def finish_pending_cleanups() -> int:
     Returns how many finished.
     """
     due = run_leases.due_cleanups(library_paths()[0])
-    return sum(attempt(_purge, session_id)[0] for session_id in due)
+    return sum(attempt(_purge, session_id)[0] for session_id in due) + _finish_media_expiries()
 
 
 def log_task_failure(task: asyncio.Task) -> None:

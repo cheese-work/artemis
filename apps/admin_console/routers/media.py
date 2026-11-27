@@ -76,6 +76,11 @@ async def _leased_file(
     if lease_ids is None:
         with non_admin_misses_are_hidden(scope):
             raise HTTPException(status_code=404, detail="Media file not found")
+    if lease_ids and not await asyncio.to_thread(path.is_file):
+        # Media expiry removed the file before this lease was admitted; the run itself stays.
+        await asyncio.shield(asyncio.to_thread(run_media.release, lease_ids))
+        with non_admin_misses_are_hidden(scope):
+            raise HTTPException(status_code=404, detail="Media file not found")
     if not lease_ids:
         return FileResponse(path, media_type=media_type)
     return _LeasedFileResponse(path, media_type, lease_ids)

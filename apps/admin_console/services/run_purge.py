@@ -88,8 +88,12 @@ def _recording_targets(traces: Path, db_path, session_id: str) -> list[Path]:
     return targets
 
 
-def purge_run(db_path, traces: Path, session_id: str, *, vacuum: bool = True) -> None:
-    """Remove a run's artifacts and rows. Safe to repeat: it only deletes what is still there."""
+def remove_media(db_path, traces: Path, session_id: str, *, logs: bool = True) -> list[str]:
+    """Remove the run's recording files and own screenshots (and with ``logs`` its folder).
+
+    Returns the screenshot names handled. Safe to repeat. Raises ``RemovalFailed`` after
+    trying every deletion when any failed.
+    """
     images = traces / "images"
     with db_session(db_path) as conn:
         names = [row[0] for row in conn.execute(_OWN_IMAGES_SQL, {"sid": session_id})]
@@ -103,15 +107,23 @@ def purge_run(db_path, traces: Path, session_id: str, *, vacuum: bool = True) ->
 
     for target in _recording_targets(traces, db_path, session_id):
         remove(target, prune_empty_parents=True)
-    # The run's own folder holds its logs, but another run's task name may equal this id.
-    remove(traces / session_id, keep=_others_recordings(traces, db_path, session_id, session_id))
+    if logs:
+        # The run's own folder holds its logs, but another run's task name may equal this id.
+        remove(
+            traces / session_id, keep=_others_recordings(traces, db_path, session_id, session_id)
+        )
     for name in names:
         candidate = image_file(images, name)  # None for a name that is not a plain file name
         if candidate is not None:
             remove(candidate)
     if failures:  # rows stay, so the file names survive and the cleanup is retried
         raise RemovalFailed(errno.EIO, f"{len(failures)} deletion(s) failed: {failures[0]}")
+    return names
 
+
+def purge_run(db_path, traces: Path, session_id: str, *, vacuum: bool = True) -> None:
+    """Remove a run's artifacts and rows. Safe to repeat: it only deletes what is still there."""
+    names = remove_media(db_path, traces, session_id)
     StorageManager(db_path or DB_PATH, traces).delete_session(
         session_id, delete_files=False, vacuum=vacuum
     )
