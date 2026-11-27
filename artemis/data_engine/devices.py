@@ -70,6 +70,17 @@ CREATE TABLE IF NOT EXISTS device_reconciler_checkpoint (
     last_alive_at REAL NOT NULL
 )""",
     ),
+    (
+        # An owner's Keep separate decision (CHE-1480): ids stored sorted, one row per pair.
+        """
+CREATE TABLE IF NOT EXISTS device_non_matches (
+    device_id_a TEXT NOT NULL,
+    device_id_b TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (device_id_a, device_id_b),
+    CHECK (device_id_a < device_id_b)
+)""",
+    ),
 )
 
 
