@@ -1330,6 +1330,36 @@ async def test_named_stream_gets_only_its_own_runs_lifecycle_events(cloudflare):
 
 
 @pytest.mark.asyncio
+async def test_named_stream_gets_its_own_requeue_event_only(cloudflare):
+    from apps.admin_console.core.ownership import owner_scope
+
+    one, two = _run(cloudflare, QA1), _run(cloudflare, QA2)
+    stream = await _open_named_stream(
+        one, owner_scope(AccessIdentity(QA1, False, "cloudflare"), "mine")
+    )
+    try:
+        task_queue_service._broadcast_event("session_requeued", {"session_id": two})
+        task_queue_service._broadcast_event("session_requeued", {"session_id": one})
+        event, data = await _next_event(stream)
+        assert (event, data["session_id"]) == ("session_requeued", one)
+    finally:
+        await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_open_mode_named_stream_gets_its_own_requeue_event_only(env):
+    response = await tasks_router.stream_events(session_id="mine", scope=SYSTEM_PRINCIPAL)
+    stream = response.body_iterator
+    assert (await _next_event(stream))[0] == "info"
+    try:
+        task_queue_service._broadcast_event("session_requeued", {"session_id": "someone-elses"})
+        task_queue_service._broadcast_event("session_requeued", {"session_id": "mine"})
+        assert (await _next_event(stream))[1]["session_id"] == "mine"
+    finally:
+        await stream.aclose()
+
+
+@pytest.mark.asyncio
 async def test_named_stream_in_open_mode_keeps_delivering_global_lifecycle_events(env):
     response = await tasks_router.stream_events(session_id="mine", scope=SYSTEM_PRINCIPAL)
     stream = response.body_iterator

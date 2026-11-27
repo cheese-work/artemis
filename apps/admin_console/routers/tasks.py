@@ -756,6 +756,7 @@ async def _status_payload() -> dict[str, Any]:
 
     # Unified Global Queue: merge web tasks and external SDK/CLI device queue tickets
     global_queued = DeviceExecutionLock.get_queued_tasks()
+    positions = DeviceExecutionLock.queue_positions()
     seen_ids = set()
     queue_data: list[dict[str, Any]] = []
 
@@ -763,13 +764,16 @@ async def _status_payload() -> dict[str, Any]:
         sid = item.get("session_id")
         if sid:
             seen_ids.add(str(sid))
-        queue_data.append({key: value for key, value in item.items() if key != "smartqa_job"})
+        queue_data.append(
+            {key: value for key, value in item.items() if key != "smartqa_job"}
+            | {"queue_position": positions.get(item.get("queue_ticket"))}
+        )
 
     for g_item in global_queued:
         sid = str(g_item.get("session_id"))
         if sid not in seen_ids:
             seen_ids.add(sid)
-            queue_data.append(g_item)
+            queue_data.append(g_item | {"queue_position": positions.get(g_item.get("token"))})
 
     if is_running:
         is_paused = state.is_paused
