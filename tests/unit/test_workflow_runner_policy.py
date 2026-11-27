@@ -20,12 +20,52 @@ INACTIVE = {
 HOSTED = {("whats-new.yml", "entry")}
 
 
+def _triggers(workflow):
+    return workflow[True] if True in workflow else workflow["on"]
+
+
 def _jobs():
+    """The jobs that run on the X99 pool: every active job that names its own runner."""
     for path in sorted(WORKFLOWS.glob("*.yml")):
         workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
         for name, job in workflow["jobs"].items():
+            # CHE-3440: a job that only calls the shared reusable workflow in multica-dotfiles has no
+            # runner of its own; that workflow picks the runner (checked in multica-dotfiles tests).
+            if "uses" in job:
+                continue
             if (path.name, name) not in INACTIVE:
                 yield path.name, name, workflow, job
+
+
+def test_pr_ready_queue_job_never_selects_the_self_hosted_pool():
+    """GitHub runs the pr-ready merge_group caller from the queue commit, which a queued PR can rewrite.
+
+    No owner-name condition authenticates those workflow bytes, so its job may carry no runner label at
+    all: it is a thin call of the shared reusable queue workflow, whose runner is the GitHub-hosted
+    `ubuntu-latest` (pinned in the multica-dotfiles tests).
+    """
+    workflow = yaml.safe_load((WORKFLOWS / "pr-ready-queue.yml").read_text(encoding="utf-8"))
+    assert list(workflow["jobs"]) == ["pr-ready"]
+    job = workflow["jobs"]["pr-ready"]
+    assert "runs-on" not in job
+    assert "self-hosted" not in json.dumps(workflow)
+    assert "cheese-x99" not in json.dumps(workflow)
+
+
+def test_the_queue_job_is_a_thin_call_with_a_read_only_token_and_no_secret():
+    workflow = yaml.safe_load((WORKFLOWS / "pr-ready-queue.yml").read_text(encoding="utf-8"))
+    assert _triggers(workflow) == {"merge_group": {"types": ["checks_requested"]}}
+    assert workflow["permissions"] == {
+        "contents": "read",
+        "pull-requests": "read",
+        "issues": "read",
+    }
+    assert "secrets." not in json.dumps(workflow)
+    assert workflow["jobs"] == {
+        "pr-ready": {
+            "uses": "cheese-work/multica-dotfiles/.github/workflows/pr-ready-reusable-queue.yml@main"
+        }
+    }
 
 
 def test_no_workflow_depends_on_blacksmith():
