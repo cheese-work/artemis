@@ -440,6 +440,22 @@ def test_preview_installs_python_only_from_the_verified_wheelhouse():
     )
 
 
+def test_opencv_is_the_headless_build_in_pyproject_and_lock():
+    """GUI OpenCV needs libxcb, libGL and libglib, which python:3.12-slim lacks (CHE-9898)."""
+    import tomllib
+
+    names = [
+        re.split(r"[<>=!~ ;\[]", dep, 1)[0].lower().replace("_", "-")
+        for dep in tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
+    ]
+    assert "opencv-python-headless" in names
+    assert not {"opencv-python", "opencv-contrib-python"} & set(names)
+    packages = tomllib.loads((ROOT / "uv.lock").read_text())["package"]
+    locked = {package["name"] for package in packages}
+    assert "opencv-python-headless" in locked
+    assert not {"opencv-python", "opencv-contrib-python"} & locked
+
+
 def _stages() -> dict[str, bytes]:
     source = (ROOT / "Dockerfile").read_bytes()
     starts = list(re.finditer(rb"^FROM\s+\S+(?:\s+AS\s+(\S+))?$", source, re.M))
