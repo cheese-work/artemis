@@ -14,6 +14,8 @@
 
 FROM scratch AS preview-node-inputs
 
+FROM scratch AS preview-python-inputs
+
 FROM node:22-bookworm-slim AS preview-frontend-builder
 
 WORKDIR /build/apps/showcase_ui
@@ -29,6 +31,25 @@ COPY apps/showcase_ui/src/ ./src/
 RUN --network=none sed -i -E '/<link .*href="https:\/\/fonts\.(googleapis|gstatic)\.com(\/|")/d' src/index.html
 ARG ARTEMIS_BUILD_SHA
 RUN --network=none npm run build
+
+
+# Per-PR preview wheels: offline build from the verified wheelhouse (named context
+# `preview-python-inputs`: requirements.txt, build-requirements.txt, wheelhouse/).
+FROM python:3.12-slim AS preview-wheel-builder
+
+WORKDIR /build
+COPY artemis/ ./artemis/
+COPY apps/ ./apps/
+COPY mcp_server/ ./mcp_server/
+COPY third_party/ ./third_party/
+COPY packages/artemis-client/ ./packages/artemis-client/
+COPY config/ ./config/
+COPY pyproject.toml setup.py README.md LICENSE ./
+COPY --from=preview-frontend-builder /build/apps/showcase_ui/dist/ ./apps/showcase_ui/dist/
+RUN --network=none --mount=type=bind,from=preview-python-inputs,target=/inputs \
+    pip install --no-cache-dir --no-index --require-hashes --find-links /inputs/wheelhouse -r /inputs/build-requirements.txt \
+    && pip wheel --no-cache-dir --no-index --find-links /inputs/wheelhouse --no-build-isolation --no-deps --wheel-dir /wheels ./packages/artemis-client \
+    && pip wheel --no-cache-dir --no-index --find-links /inputs/wheelhouse --no-build-isolation --no-deps --wheel-dir /wheels .
 
 
 FROM node:22-bookworm-slim AS frontend-builder
@@ -87,6 +108,10 @@ FROM python:3.12-slim AS preview
 
 WORKDIR /app
 COPY --from=preview-frontend-builder /build/apps/showcase_ui/dist/ ./apps/showcase_ui/dist/
+RUN --network=none --mount=type=bind,from=preview-python-inputs,target=/inputs \
+    pip install --no-cache-dir --no-index --require-hashes --find-links /inputs/wheelhouse -r /inputs/requirements.txt
+RUN --network=none --mount=type=bind,from=preview-wheel-builder,source=/wheels,target=/wheels \
+    pip install --no-cache-dir --no-index --no-deps /wheels/artemis_client-*.whl /wheels/artemis-*.whl
 RUN --network=none useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin preview
 ENV PYTHONUNBUFFERED=1
 ENV ARTEMIS_APP_DIR=/app
