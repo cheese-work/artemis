@@ -39,7 +39,9 @@ def test_upgrade_from_revision_one_preserves_notes_for_the_old_reader(library):
 
     with closing(sqlite3.connect(library.db)) as conn:
         new_schema = dict(conn.execute("SELECT name, sql FROM sqlite_master"))
-        assert {name: new_schema[name] for name in old_schema} == old_schema
+        # Only the catalog triggers change: they now also index note text (CHE-1478).
+        changed = {name for name in old_schema if new_schema[name] != old_schema[name]}
+        assert changed <= {name for name in old_schema if name.startswith("run_catalog_")}
         assert conn.execute(
             "SELECT revision FROM schema_revisions WHERE module = 'notes'"
         ).fetchone() == (2,)

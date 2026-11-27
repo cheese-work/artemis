@@ -321,7 +321,9 @@ def test_migration_is_additive_and_records_its_revision(library):
     second = notes.migrate(library.db)
 
     after = _schema(library.db)
-    assert {name: after[name] for name in before} == before  # nothing existing changed
+    # Nothing existing changed, except the catalog triggers that now also index note text.
+    changed = {name for name in before if after[name] != before[name]}
+    assert changed <= {name for name in before if name.startswith("run_catalog_")}
     assert {"schema_revisions", "run_annotations", "evidence_tombstones"} <= set(after)
     with sqlite3.connect(library.db) as conn:
         assert conn.execute(

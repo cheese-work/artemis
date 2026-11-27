@@ -12,13 +12,16 @@ from __future__ import annotations
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+import logging
 import sqlite3
 import time
 import uuid
 
 from apps.admin_console.core import config
 from apps.admin_console.core.access_control import AdminAPIError
-from artemis.data_engine import schema_revisions
+from artemis.data_engine import run_catalog, schema_revisions
+
+logger = logging.getLogger(__name__)
 
 MODULE = "notes"
 DOCS = "https://github.com/cheese-work/artemis/blob/main/docs/board-api.md"
@@ -111,7 +114,7 @@ class Comment:
 
 
 def migrate(db_path: str | Path) -> schema_revisions.RevisionReport:
-    """Apply pending ``notes`` revisions, then drop notes whose run is gone.
+    """Apply pending ``notes`` revisions, drop notes whose run is gone, then index note text.
 
     The previous binary deletes whole runs without knowing these tables; the
     next upgrade finishes that deletion (docs/board-operations.md, "Rollback").
@@ -122,6 +125,10 @@ def migrate(db_path: str | Path) -> schema_revisions.RevisionReport:
             conn.execute(
                 f"DELETE FROM {table} WHERE session_id NOT IN (SELECT session_id FROM sessions)"
             )
+    try:
+        run_catalog.migrate_notes(db_path)  # note text joins the run search index
+    except sqlite3.Error:
+        logger.exception("Run search could not index notes for %s", db_path)
     return report
 
 

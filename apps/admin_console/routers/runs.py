@@ -170,6 +170,16 @@ async def list_runs(
         # Built from the presented page: visible runs only, prompt already redacted.
         for run in runs:
             run["snippet"] = run_catalog.search_snippet(run, q)
+        # A run found only by its notes: read them now, for these visible runs alone.
+        unmatched = [run for run in runs if run["snippet"] is None]
+        notes = await asyncio.to_thread(
+            run_catalog_repo.note_texts, [run["session_id"] for run in unmatched]
+        )
+        for run in unmatched:
+            bodies = notes.get(run["session_id"], [])
+            if run["read_only"]:
+                bodies = [(name, redact_text(redact_image_data(body))) for name, body in bodies]
+            run["snippet"] = run_catalog.note_snippet(bodies, q)
     return {
         "runs": runs,
         "next_cursor": page.next_cursor,
