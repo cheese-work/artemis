@@ -1,0 +1,3 @@
+11-19 12:00:00.001  1234  5678 I FA-SVC : Logging event (FE): origin=app,name=obd_1_scr_view,params=Bundle[{screen=welcome}]
+11-19 12:00:00.002  1234  5678 I FA-SVC : Logging event (FE): origin=auto,name=screen_view,params=Bundle[{firebase_screen=Welcome}]
+11-19 12:00:00.003  1234  5678 I FA-SVC : Logging event (FE): origin=app,name=navigation_route_changed,params=Bundle[{route=welcome}]
